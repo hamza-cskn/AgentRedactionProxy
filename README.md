@@ -1,9 +1,12 @@
 # Agent Redaction Proxy
 
 > **TL;DR:** Keeps sensitive data local when using AI coding agents (OpenCode, Claude Code).
-> It replaces real IPv4 addresses with safe RFC 5737 documentation IPs before requests leave your machine and restores them in LLM responses. Recognizable credentials and API keys are permanently redacted.
+
+It replaces real IPv4 addresses with safe RFC 5737 documentation IPs before requests leave your machine and restores them in LLM responses. Recognizable credentials and API keys are permanently redacted.
 
 <img width="344" height="264" alt="Agent Redaction Proxy concept" src="https://github.com/user-attachments/assets/aed2009c-9fbe-44c4-8b26-954c3fa94544" />
+
+*The model doesn't know the real IP. So answers wrongly as we want.*
 
 ---
 
