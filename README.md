@@ -6,6 +6,13 @@ It also redacts recognizable credentials without restoring or storing them.
 It serves OpenCode's OpenAI login and Claude Code's Claude login on separate
 local ports, with one shared IPv4 mapping store.
 
+## TLDR
+Sensitive datas are visible for your local, obfuscated for the LLM.
+
+<img width="344" height="264" alt="image" src="https://github.com/user-attachments/assets/aed2009c-9fbe-44c4-8b26-954c3fa94544" />
+
+
+
 ## Start
 
 Requires Node.js 24 or newer on macOS or Linux. There are no npm dependencies.
