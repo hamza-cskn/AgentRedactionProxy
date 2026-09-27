@@ -42,7 +42,7 @@ async function main() {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    process.stderr.write(`[opencode-ipv4-proxy] ${error.message}\n`);
+    process.stderr.write(`[agent-redaction-proxy] ${error.message}\n`);
     process.exitCode = 1;
   });
 }

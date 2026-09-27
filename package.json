@@ -1,5 +1,5 @@
 {
-  "name": "opencode-ipv4-proxy",
+  "name": "agent-redaction-proxy",
   "version": "0.1.0",
   "private": true,
   "type": "module",

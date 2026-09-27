@@ -1,4 +1,4 @@
-# IPv4 Proxy for OpenCode OAuth and Claude Code
+# Agent Redaction Proxy
 
 A local reverse proxy that consistently replaces IPv4 addresses in plain text
 before model requests leave the machine, then restores those addresses in
