@@ -9,8 +9,8 @@ import { createProxy } from '../src/proxy.mjs';
 import { redactSecrets } from '../src/secret-redaction.mjs';
 
 // Synthetic text only. Credentials and IPv4 addresses are critical in both
-// modes: never-see must block anything it cannot redact with certainty, while
-// non-paranoic may forward ambiguous text only after the secret is removed.
+// modes: paranoic must block anything it cannot redact with certainty, while
+// default may forward ambiguous text only after the secret is removed.
 const key = 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78';
 const opaque = 'opaqueValue123';
 const pemBody = 'QUJDREVGRw==';
@@ -146,7 +146,7 @@ const ipInSecretContext = [
   ['token beside IP', `10.20.30.40 ghp_${key}-old`, [key, '10.20.30.40']],
 ];
 
-for (const mode of ['never-see', 'non-paranoic']) {
+for (const mode of ['paranoic', 'default']) {
   for (const [name, input, fragments] of [...leakTexts, ...ipInSecretContext]) {
     test(`${mode} hardening request never forwards: ${name}`, async () => {
       const { text, forwarded } = await send(mode, input);
@@ -166,13 +166,13 @@ for (const mode of ['never-see', 'non-paranoic']) {
   }
 }
 
-// Ambiguous credential boundaries: never-see must not guess.
+// Ambiguous credential boundaries: paranoic must not guess.
 for (const [name, input] of [
   ['password followed by two words and an email', 'mongo://alice:hunter2 see me@example.com'],
   ['space inside password with host IP', 'mongo://alice:hunter 2@10.20.30.40/app'],
 ]) {
-  test(`never-see hardening blocks ambiguous text: ${name}`, async () => {
-    const { status, forwarded } = await send('never-see', input);
+  test(`paranoic hardening blocks ambiguous text: ${name}`, async () => {
+    const { status, forwarded } = await send('paranoic', input);
     assert.deepEqual(forwarded, [], 'ambiguous credential text must not be forwarded');
     assert.equal(status, 502);
   });

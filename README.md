@@ -63,9 +63,10 @@ Claude Code's subscription login has not been live-tested in this project yet.
 
 ## Modes
 
-Set `mode` in `config.json`, then restart the proxy.
+Set `mode` to `"default"` or `"paranoic"` in `config.json`, then restart the proxy.
+The checked-in configuration keeps the stricter `"paranoic"` mode enabled.
 
-### `never-see`
+### `paranoic`
 
 - The proxy persists new mappings before forwarding a model request.
 - If outbound IPv4 or credential processing fails, the proxy returns `502` and does not call
@@ -75,7 +76,7 @@ Set `mode` in `config.json`, then restart the proxy.
 - If the proxy is unavailable, the configured request fails. The OpenCode
   project config and startup flag do not provide a direct provider fallback.
 
-### `non-paranoic`
+### `default`
 
 - Requests and responses are normally transformed in the same way.
 - IPv4 processing failures block requests containing real IPv4 addresses in
@@ -196,7 +197,7 @@ fixed process-memory ceiling: parsing and SSE transformation create extra copies
 
 ## Security Boundary
 
-The `never-see` guarantee covers dotted-decimal IPv4 addresses, the recognized
+The `paranoic` guarantee covers dotted-decimal IPv4 addresses, the recognized
 AWS private-hostname forms, and the recognized credential patterns above in
 plain-text content of POST bodies
 sent through either configured listener. It does not guarantee detection of

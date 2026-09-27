@@ -29,7 +29,7 @@ test('OpenCode restores tool arguments and redacts the subsequent tool result', 
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
   context.after(() => new Promise((resolve) => upstream.close(resolve)));
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await MappingStore.open(path.join(directory, 'mappings.json')),
     upstreamBase: `http://127.0.0.1:${upstream.address().port}/v1`,
     logger: () => {},

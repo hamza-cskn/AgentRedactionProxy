@@ -55,7 +55,7 @@ test('redacts inference requests and deobfuscates buffered SSE responses', async
 
   const logs = [];
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: (line) => logs.push(line),
@@ -100,7 +100,7 @@ test('restores fragmented SSE when the upstream omits Content-Type', async (cont
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/backend-api/codex`,
     logger: () => {},
@@ -133,7 +133,7 @@ test('Claude Code Messages route keeps OAuth headers and restores SSE text', asy
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/v1`,
     logger: () => {},
@@ -168,7 +168,7 @@ test('Claude Code auxiliary POST bodies are redacted before forwarding', async (
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/v1`,
     protectAllPostBodies: true,
@@ -201,7 +201,7 @@ test('redacts API keys from outbound bodies without persisting or restoring them
   const store = await createStore();
   const logs = [];
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store,
     upstreamBase: `${upstreamOrigin}/v1`,
     protectAllPostBodies: true,
@@ -226,7 +226,7 @@ test('redacts API keys from outbound bodies without persisting or restoring them
   assert.equal(logs.some((line) => line.includes('"secretRedactions":1')), true);
 });
 
-test('non-paranoic IPv4 failure does not forward the original secret', async (context) => {
+test('default IPv4 failure does not forward the original secret', async (context) => {
   const token = `ghp_${'f'.repeat(24)}`;
   let captured;
   const upstream = http.createServer(async (request, response) => {
@@ -236,7 +236,7 @@ test('non-paranoic IPv4 failure does not forward the original secret', async (co
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
   const proxy = createProxy({
-    mode: 'non-paranoic',
+    mode: 'default',
     store: { obfuscate: async () => { throw new Error('test failure'); }, deobfuscate: async () => ({ body: '{}', count: 0 }) },
     upstreamBase: `${upstreamOrigin}/v1`,
     logger: () => {},
@@ -257,7 +257,7 @@ test('keeps MongoDB metadata and obfuscates every host IP while hiding the passw
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/v1`,
     protectAllPostBodies: true,
@@ -280,7 +280,7 @@ test('keeps MongoDB metadata and obfuscates every host IP while hiding the passw
   assert.equal(captured[1], 'mongdb : / / app_user : REDACTED_PASSWORD @ 192.0.2.2:27017,192.0.2.1:27017/analytics_db');
 });
 
-for (const mode of ['never-see', 'non-paranoic']) {
+for (const mode of ['paranoic', 'default']) {
   for (const [name, input, expected] of [
     ['plain IP', 'inspect 10.20.30.40', 'inspect 192.0.2.1'],
     ['IP and API token', `10.20.30.40 ghp_${'a'.repeat(32)}`, '192.0.2.1 [REDACTED_API_KEY]'],
@@ -322,7 +322,7 @@ for (const [name, input] of [
   ['several words in password', 'mongdb://user:several secret words here@10.20.30.40'],
   ['incomplete private key', '10.20.30.40\n-----BEGIN PRIVATE KEY-----\nQUJDREVGRw=='],
 ]) {
-  test(`never-see blocks unsafe text: ${name}`, async (context) => {
+  test(`paranoic blocks unsafe text: ${name}`, async (context) => {
     let upstreamCalls = 0;
     const upstream = http.createServer((_request, response) => {
       upstreamCalls += 1;
@@ -331,7 +331,7 @@ for (const [name, input] of [
     const upstreamOrigin = await listen(upstream);
     context.after(() => close(upstream));
     const proxy = createProxy({
-      mode: 'never-see',
+      mode: 'paranoic',
       store: await createStore(),
       upstreamBase: `${upstreamOrigin}/v1`,
       protectAllPostBodies: true,
@@ -351,7 +351,7 @@ for (const [name, input] of [
   });
 }
 
-test('unreadable outbound text fails closed even in non-paranoic mode', async (context) => {
+test('unreadable outbound text fails closed even in default mode', async (context) => {
   let upstreamCalls = 0;
   const upstream = http.createServer((_request, response) => {
     upstreamCalls += 1;
@@ -360,7 +360,7 @@ test('unreadable outbound text fails closed even in non-paranoic mode', async (c
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
   const proxy = createProxy({
-    mode: 'non-paranoic',
+    mode: 'default',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/v1`,
     protectAllPostBodies: true,
@@ -387,7 +387,7 @@ test('recognizes every OpenCode Zen inference endpoint', async (context) => {
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
@@ -428,7 +428,7 @@ test('does not transform non-inference endpoints', async (context) => {
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
@@ -440,7 +440,7 @@ test('does not transform non-inference endpoints', async (context) => {
   assert.equal(await response.text(), '{"description":"192.0.2.1"}');
 });
 
-test('never-see mode refuses to forward when outbound redaction fails', async (context) => {
+test('paranoic mode refuses to forward when outbound redaction fails', async (context) => {
   let upstreamCalls = 0;
   const upstream = http.createServer((_request, response) => {
     upstreamCalls += 1;
@@ -450,7 +450,7 @@ test('never-see mode refuses to forward when outbound redaction fails', async (c
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: {
       obfuscate: async () => { throw new Error('state unavailable'); },
       deobfuscate: () => { throw new Error('not reached'); },
@@ -470,7 +470,7 @@ test('never-see mode refuses to forward when outbound redaction fails', async (c
   assert.equal(upstreamCalls, 0);
 });
 
-test('capacity exhaustion never forwards, including non-paranoic mode', async (context) => {
+test('capacity exhaustion never forwards, including default mode', async (context) => {
   let upstreamCalls = 0;
   const upstream = http.createServer((_request, response) => {
     upstreamCalls += 1;
@@ -480,7 +480,7 @@ test('capacity exhaustion never forwards, including non-paranoic mode', async (c
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'non-paranoic',
+    mode: 'default',
     store: {
       obfuscate: async () => {
         const error = new Error('capacity exhausted');
@@ -509,7 +509,7 @@ test('capacity exhaustion never forwards, including non-paranoic mode', async (c
 
 // Stability may win only when no critical information escapes. A warning
 // header does not make forwarding an unredacted IPv4 address acceptable.
-for (const mode of ['never-see', 'non-paranoic']) {
+for (const mode of ['paranoic', 'default']) {
   for (const [name, input] of [
     ['escaped JSON', String.raw`{"input":"10\u002e20\u002e30\u002e40"}`],
     ['nested AWS hostname', JSON.stringify({ arguments: JSON.stringify({ host: 'ip-10-20-30-40.ec2.internal' }) })],
@@ -538,7 +538,7 @@ for (const mode of ['never-see', 'non-paranoic']) {
   }
 }
 
-for (const mode of ['never-see', 'non-paranoic']) {
+for (const mode of ['paranoic', 'default']) {
   for (const code of ['EIO', 'MAPPING_DURABILITY_FAILED', 'MAPPING_CAPACITY_EXHAUSTED']) {
     test(`${mode} never forwards IP text after ${code}`, async (context) => {
       const captured = [];
@@ -581,7 +581,7 @@ test('returns the fake response when inbound deobfuscation fails', async (contex
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: {
       obfuscate: async (text) => ({ body: text, count: 0 }),
       deobfuscate: async () => { throw new Error('decode failed'); },
@@ -616,7 +616,7 @@ test('returns malformed SSE unchanged with a warning', async (context) => {
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
@@ -638,7 +638,7 @@ test('returns malformed SSE unchanged with a warning', async (context) => {
 
 test('enforces the configured request body limit', async (context) => {
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     maxBodyBytes: 8,
     logger: () => {},
@@ -664,7 +664,7 @@ test('treats inference paths without the /v1 prefix as inference too', async (co
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
@@ -701,7 +701,7 @@ test('blocks redirects from an inference endpoint instead of leaking the Locatio
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
@@ -731,7 +731,7 @@ test('does not block redirects on non-inference endpoints', async (context) => {
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
@@ -754,7 +754,7 @@ test('redacts IPv4 addresses that appear in the logged endpoint path', async (co
 
   const logs = [];
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: (line) => logs.push(line),
@@ -771,7 +771,7 @@ test('redacts IPv4 addresses that appear in the logged endpoint path', async (co
 test('strict credential rejection in log metadata does not escape the request handler', async (context) => {
   const logs = [];
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     protectAllPostBodies: true,
     logger: (line) => logs.push(JSON.parse(line)),
@@ -798,7 +798,7 @@ test('rejects a response that exceeds the limit after deobfuscation', async (con
   context.after(() => close(upstream));
 
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: {
       obfuscate: async (text) => ({ body: text, count: 0 }),
       deobfuscate: async () => ({ body: '123456789', count: 1 }),
@@ -821,7 +821,7 @@ test('contains malformed URLs without calling upstream', async () => {
   let upstreamCalls = 0;
   const logs = [];
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: {},
     logger: (line) => logs.push(JSON.parse(line)),
     fetchImpl: async () => { upstreamCalls += 1; },
@@ -841,7 +841,7 @@ test('contains malformed URLs without calling upstream', async () => {
 test('redacts escaped JSON before it reaches the upstream parser', async (context) => {
   let captured;
   const proxy = createProxy({
-    mode: 'never-see',
+    mode: 'paranoic',
     store: await createStore(),
     logger: () => {},
     fetchImpl: async (_url, { body }) => {
@@ -864,7 +864,7 @@ for (const phase of ['headers', 'body']) {
   test(`expires an upstream stalled during ${phase}`, { timeout: 3000 }, async (context) => {
     let upstreamSignal;
     const proxy = createProxy({
-      mode: 'never-see', store: {}, logger: () => {}, upstreamTimeoutMs: 50,
+      mode: 'paranoic', store: {}, logger: () => {}, upstreamTimeoutMs: 50,
       fetchImpl: async (_url, { signal }) => {
         upstreamSignal = signal;
         if (phase === 'headers') {
@@ -896,7 +896,7 @@ test('aborts upstream when the client disconnects', { timeout: 3000 }, async (co
   let aborted;
   const upstreamAborted = new Promise((resolve) => { aborted = resolve; });
   const proxy = createProxy({
-    mode: 'never-see', store: {}, logger: () => {},
+    mode: 'paranoic', store: {}, logger: () => {},
     fetchImpl: async (_url, { signal }) => {
       upstreamSignal = signal;
       started();
@@ -923,7 +923,7 @@ test('rejects a ninth concurrent request and releases slots after completion', {
   const full = new Promise((resolve) => { started = resolve; });
   let hold = true;
   const proxy = createProxy({
-    mode: 'never-see', store: {}, logger: () => {},
+    mode: 'paranoic', store: {}, logger: () => {},
     fetchImpl: async () => {
       if (!hold) return new Response('{}');
       return new Promise((resolve) => {
@@ -960,7 +960,7 @@ test('restores fragmented SSE for every protocol with either route prefix', asyn
   ];
   let current;
   const proxy = createProxy({
-    mode: 'never-see', store: await createStore(), logger: () => {},
+    mode: 'paranoic', store: await createStore(), logger: () => {},
     fetchImpl: async (_url, { body }) => {
       assert.equal(JSON.parse(body.toString()).input, '192.0.2.1');
       return new Response(['192', '.0.2', '.1'].map((chunk) => (

@@ -227,7 +227,7 @@ export function createProxy({
             });
             return;
           }
-          if (mode === 'never-see' || containsSensitiveIpv4(requestBody.toString('utf8'))) {
+          if (mode === 'paranoic' || containsSensitiveIpv4(requestBody.toString('utf8'))) {
             response.writeHead(502, { 'content-type': 'application/json' });
             response.end(JSON.stringify({ error: 'Outbound IPv4 redaction failed; request was not forwarded' }));
             logMetadata(logger, {
