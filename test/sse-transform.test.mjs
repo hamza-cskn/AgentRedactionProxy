@@ -159,25 +159,16 @@ test('keeps two interleaved Responses items separate by item_id', async () => {
   assert.equal(call2, '172.16.0.9');
 });
 
-test('does not corrupt unrelated single-chunk deltas when item_id is missing from both', async () => {
-  // Before the fix, two events with no item_id/output_index/content_index
-  // collapsed into one channel: their delta text was concatenated, the
-  // combined blob was deobfuscated as a single string, and the result was
-  // re-sliced by original chunk length -- corrupting both chunks whenever
-  // the replacement text was a different length than the original.
+test('rejects restoration of unidentified deltas even when they look complete', async () => {
   const store = await mappedStore(); // registers 10.123.45.67 -> 192.0.2.1
-  const fake2 = (await store.obfuscate('198.51.100.9')).body; // registers -> 192.0.2.2
+  const fake2 = (await store.obfuscate('172.16.0.9')).body;
 
   const input = encodeSse([
     { type: 'response.function_call_arguments.delta', delta: `ping 192.0.2.1` },
     { type: 'response.function_call_arguments.delta', delta: `curl ${fake2}` },
   ]);
 
-  const transformed = await deobfuscateSse(input, 'responses', store);
-  const events = decodeSse(transformed.body);
-
-  assert.equal(events[0].delta, 'ping 10.123.45.67');
-  assert.equal(events[1].delta, 'curl 198.51.100.9');
+  await assert.rejects(deobfuscateSse(input, 'responses', store), /unidentified SSE delta/);
 });
 
 test('never leaks a fragment of one real address into an unrelated stream when both are missing item_id', async () => {
@@ -187,7 +178,7 @@ test('never leaks a fragment of one real address into an unrelated stream when b
   // not let a byte of either address end up misattributed to the other
   // stream's output.
   const store = await mappedStore(); // registers 10.123.45.67 -> 192.0.2.1
-  const fake2 = (await store.obfuscate('198.51.100.9')).body; // registers -> 192.0.2.2
+  const fake2 = (await store.obfuscate('172.16.0.9')).body;
 
   const input = encodeSse([
     { type: 'response.function_call_arguments.delta', delta: `ping ${'192.0.2.1'.slice(0, 4)}` },
@@ -196,16 +187,7 @@ test('never leaks a fragment of one real address into an unrelated stream when b
     { type: 'response.function_call_arguments.delta', delta: fake2.slice(4) },
   ]);
 
-  const transformed = await deobfuscateSse(input, 'responses', store);
-  const events = decodeSse(transformed.body);
-  const combined = events.map((event) => event.delta).join('');
-
-  assert.equal(combined.includes('10.123.45.67'), false);
-  assert.equal(combined.includes('198.51.100.9'), false);
-  assert.equal(events.map((event) => event.delta).join('|'), input.split(/\r?\n\r?\n/)
-    .filter((block) => block.startsWith('data: {'))
-    .map((block) => JSON.parse(block.slice(5)).delta)
-    .join('|'));
+  await assert.rejects(deobfuscateSse(input, 'responses', store), /unidentified SSE delta/);
 });
 
 test('does not split Unicode surrogate pairs during redistribution', async () => {

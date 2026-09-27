@@ -41,7 +41,7 @@ It replaces real IPv4 addresses with safe RFC 5737 documentation IPs before requ
 | **IPv4 Masking & Restoration** | 1:1 mapping of real IPv4s to documentation IPs. AWS private hostnames (e.g., `ip-10-20-30-40.ec2.internal`) are also recognized and mapped. |
 | **Credential Redaction** | Permanent one-way redaction of API keys (OpenAI, Anthropic, GitHub, GitLab, AWS, Slack, Stripe, Google, Hugging Face, PyPI, npm), JWT/JWE tokens, PEM/PGP private keys, and URL/DSN passwords (`user:pass@host`). |
 | **Fail-Closed Security** | Rejects requests (HTTP 502) if secret redaction fails, credentials appear malformed, or mapping limits are reached. |
-| **SSE Stream Support** | Reassembles streamed deltas (OpenAI Responses, Anthropic Messages) across chunk boundaries before restoring IPs. |
+| **SSE Stream Support** | Reassembles streamed deltas (OpenAI Responses, Anthropic Messages), including Anthropic initial block text, before restoring IPs. Responses string deltas without an `item_id` leave the entire response unchanged with fake addresses and an `x-ipv4-proxy-warning` header; restoration never guesses their grouping. |
 | **Zero Dependencies** | Built with native Node.js ESM. No external packages required. |
 
 ---
@@ -119,6 +119,22 @@ Configure proxy behavior in `config.json`:
 
 - `"paranoic"` (default): Strict fail-closed policy. Durably commits mappings before forwarding. Rejects outbound requests if redaction or storage fails.
 - `"default"`: Same transformation logic, but requests containing no real IPv4 addresses can bypass storage failures with a warning header.
+
+### Literal matching boundaries
+
+- Numeric ports and common literal port placeholders (`port`, `PORT`, `$PORT`, `${PORT}`, `${PORT:-3000}`, `{port}`, `%s`) are accepted inside ordinary prose and code. Expressions are not evaluated; actual URL passwords remain protected.
+- Connection-string password matching uses adjacent assignments, not an unrelated `host=` anywhere on the line. A standalone code semicolon is not treated as a URL parameter separator.
+- npm and PyPI matching follows their documented token shapes ([npm](https://api-docs.npmjs.com/), [PyPI](https://docs.pypi.org/api/secrets/)). Filename extensions never exempt an otherwise matching token. Ambiguous `sk-` and `hf_` names remain conservatively redacted.
+- Generic `.env`/JSON/YAML passwords, Authorization headers, and `curl -u` are not yet covered as separate formats. Recognized token patterns inside them are still redacted. PEM-marker fail-closed behavior is unchanged.
+
+---
+
+## Known Gaps — Deliberate Scope Exclusions
+
+These limitations are intentional and outside the project's scope:
+
+- **Semantic or evaluated sensitive data:** The proxy matches literal text; it does not execute code or infer values produced by string concatenation, variable substitution, or other computations. For example, `"10.20." + "30.40"` is not detected as the resulting IPv4 address. Reassembling network chunks and protocol-defined SSE fragments is separate and remains supported.
+- **Placeholder versus password distinction:** The proxy does not reliably distinguish a placeholder from a real password. Characters such as `$`, `{`, and `}` can occur in either. Do not rely on placeholder-looking text being preserved or classified correctly; general semantic classification is deliberately out of scope.
 
 ---
 

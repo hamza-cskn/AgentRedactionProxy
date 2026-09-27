@@ -45,6 +45,11 @@ for (const name of ['access_token', 'refresh_token', 'id_token', 'auth_token', '
 
 // Text that must pass through untouched so ordinary agent work keeps working.
 const benignTexts = [
+  ['JavaScript URL template', 'http://${HOST}:${PORT}/api'],
+  ['Python URL template', 'f"http://{host}:{port}"'],
+  ['shell port variable', 'http://localhost:$PORT'],
+  ['deployment filename', 'task-queue-worker-production-deployment.yaml'],
+  ['deployment filename in an edit instruction', 'Edit ./deploy/task-queue-worker-production-deployment.yaml'],
   ['scp-style git remote', 'git@github.com:org/repo.git'],
   ['SSH URL with user and port', 'ssh://git@github.com:22/org/repo'],
   ['Windows file URL', 'file:///C:/Users/alice/project'],

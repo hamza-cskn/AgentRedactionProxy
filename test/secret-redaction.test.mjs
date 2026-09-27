@@ -115,7 +115,7 @@ const providerTokens = [
   ['Stripe webhook', `whsec_${key}`],
   ['Google', `AIza${key}_synthetic-tail`],
   ['npm', `npm_${key}`],
-  ['PyPI', `pypi-${key}_synthetic-tail`],
+  ['PyPI', `pypi-${key.repeat(3)}_synthetic-tail`],
   ['SendGrid', `SG.${key}.${key}_synthetic-tail`],
 ];
 
@@ -320,3 +320,24 @@ test('long non-secret text and one-dot identifiers remain unchanged', () => {
     assert.deepEqual(redactSecrets(input), { body: input, count: 0 });
   }
 });
+
+for (const [input, expected] of [
+  ['http://${HOST}:${PORT}/api', 'http://${HOST}:${PORT}/api'],
+  ['f"http://{host}:{port}"', 'f"http://{host}:{port}"'],
+  ['http://localhost:$PORT', 'http://localhost:$PORT'],
+  ['task-queue-worker-production-deployment.yaml', 'task-queue-worker-production-deployment.yaml'],
+  ['http://alice:secret@${HOST}:${PORT}/api', 'http://alice:REDACTED_PASSWORD@${HOST}:${PORT}/api'],
+  ['http://alice:$PORT@host.example/api', 'http://alice:REDACTED_PASSWORD@host.example/api'],
+  [`MY_sk-${key}`, 'MY_[REDACTED_API_KEY]'],
+  [`./sk-${key}.txt`, './[REDACTED_API_KEY].txt'],
+]) {
+  test(`code and filename boundary: ${input}`, () => {
+    assert.equal(redactSecrets(input).body, expected);
+    const history = JSON.stringify({ messages: [
+      { role: 'user', content: input },
+      { role: 'assistant', content: 'Acknowledged.' },
+      { role: 'user', content: 'Continue.' },
+    ] });
+    assert.equal(JSON.parse(redactSecrets(history).body).messages[0].content, expected);
+  });
+}

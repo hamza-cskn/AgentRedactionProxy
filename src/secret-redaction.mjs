@@ -11,14 +11,22 @@ const PASSWORD_NAMES = new Set([
 ]);
 const AWS_SECRET_NAMES = new Set(['aws_secret_access_key', 'aws_session_token']);
 const DSN_FIELD = /(?:^|[; \t])(?:host|hostaddr|dbname|server|driver|user(?:[ \t]+id)?|uid)[ \t]*=/i;
+// Adjacent assignments form a connection string; unrelated code on the same
+// line ("const host = ...; const token = ...") does not.
+const DSN_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*(?:[ \t]+[Ii][Dd])?[ \t]*=[ \t]*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;"'\x60]+)?`;
+const DSN_SEQUENCE = new RegExp(`(?<![A-Za-z0-9_])(?:${DSN_ASSIGNMENT})(?:[; \\t]+${DSN_ASSIGNMENT})+`, 'g');
 const QUERY_VALUE_END = /[&#;"'<>]|(?<![ \t])[ \t]+(?=[A-Za-z][A-Za-z0-9+.-]*[ \t]*:[ \t]*\/)/;
 const DSN_VALUE_END = /[&#;"'<>]|(?<![ \t])[ \t]+(?=[A-Za-z_][A-Za-z0-9_]*[ \t]*=|[A-Za-z][A-Za-z0-9+.-]*[ \t]*:[ \t]*\/)/;
 const MAX_USERINFO_CHARS = 512;
+const PORT_VALUE = /^(?:\d+|port|PORT|%s|\$[A-Za-z_][A-Za-z0-9_]*|\$?\{[A-Za-z_][A-Za-z0-9_.]*(?::-[A-Za-z0-9_]+)?\})[.,;)\]}`]*$/;
 const AUTHORITY_TERMINATORS = new Set(['@', '/', '?', '#', '\r', '\n', '"', "'", '<', '>']);
 const PRIVATE_KEY_START = /-----BEGIN ((?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/g;
 const UNSAFE_PRIVATE_KEY = /-----(?:BEGIN|END) (?:(?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----|\bPuTTY-User-Key-File-\d+:/;
-// A recognizable token remains sensitive when glued to an identifier or suffix.
-const API_KEY = /github_pat_[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_-]{20,}|gl(?:pat|oas|dt|rt|rtr|cbt|ptt|ft|imt|agent|wt|soat|ffct)-[A-Za-z0-9_-]{8,}|xox[bp]-[A-Za-z0-9_-]{10,}|xapp-[A-Za-z0-9_-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9_-]{8,}|whsec_[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}|ya29\.[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16,}|npm_[A-Za-z0-9_-]{20,}|pypi-[A-Za-z0-9_-]{20,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+/g;
+// Require a prefix boundary so words such as "task-queue" cannot match "sk-".
+// Separators (including MY_ prefixes) and appended suffixes still permit masking.
+// npm's documented core is 36 alphanumerics; PyPI's payload is at least 85
+// base64url characters (api-docs.npmjs.com, docs.pypi.org/api/secrets/).
+const API_KEY = /(?<![A-Za-z0-9])(?:github_pat_[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_-]{20,}|gl(?:pat|oas|dt|rt|rtr|cbt|ptt|ft|imt|agent|wt|soat|ffct)-[A-Za-z0-9_-]{8,}|xox[bp]-[A-Za-z0-9_-]{10,}|xapp-[A-Za-z0-9_-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9_-]{8,}|whsec_[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}|ya29\.[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16,}|npm_[A-Za-z0-9]{36}[A-Za-z0-9_-]*|pypi-[A-Za-z0-9_-]{85,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+)/g;
 const WEB_TOKEN = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]+={0,2}(?:\.[A-Za-z0-9_-]*={0,2}){2,}/g;
 
 const horizontalSpace = (char) => char === ' ' || char === '\t';
@@ -32,14 +40,20 @@ function redactUrlPasswords(value) {
     if (start < cursor) continue;
     let end = start;
     while (horizontalSpace(value[end])) end += 1;
-    if (/^\[[0-9a-f:.%]+\](?::\d+)?(?:[/?#\s]|$)/i.test(value.slice(end))) continue;
     const userStart = end;
+    const ipv6 = /^\[[0-9a-f:.%]+\]/i.exec(value.slice(end));
+    if (ipv6) end += ipv6[0].length;
     while (end < value.length && value[end] !== ':' && !AUTHORITY_TERMINATORS.has(value[end])) {
       end += 1;
     }
     if (value[end] !== ':') continue;
     const user = value.slice(userStart, end).trim();
-    if (/\s/.test(user)) throw new Error('Unsafe credential URL');
+    if (/\s/.test(user)) {
+      // Do not treat prose or the next URL's scheme as this URL's userinfo.
+      // Whitespace in actual userinfo still fails closed.
+      if (/^[^\r\n"'<>]*@/.test(value.slice(end))) throw new Error('Unsafe credential URL');
+      continue;
+    }
     end += 1;
     while (horizontalSpace(value[end])) end += 1;
     // A documented placeholder is not a password; arbitrary angle-bracketed
@@ -54,9 +68,9 @@ function redactUrlPasswords(value) {
     const passwordEnd = end;
     while (horizontalSpace(value[end])) end += 1;
     if (value[end] !== '@') {
-      // Host:port is benign, including @ in a subsequent path. A nonnumeric
-      // value after ':' could be a password with a broken or missing boundary.
-      if (/^\d+$/.test(value.slice(passwordStart, passwordEnd))
+      // Numeric ports and literal variable placeholders are ordinary code.
+      // An @ before the path still signals possible userinfo and is not exempt.
+      if (PORT_VALUE.test(value.slice(passwordStart, passwordEnd))
         && !/^[^/?#\r\n"'<>]*@/.test(value.slice(end))) continue;
       throw new Error('Unsafe credential URL');
     }
@@ -80,14 +94,19 @@ function redactUrlPasswords(value) {
 function redactPasswordParameters(value) {
   let count = 0;
   const body = value.replace(/[^\r\n]+/g, (line) => {
-    const dsn = DSN_FIELD.test(line);
+    const dsns = [...line.matchAll(DSN_SEQUENCE)].filter((match) => DSN_FIELD.test(match[0]));
     let cursor = 0;
     let output = '';
     for (const match of line.matchAll(PASSWORD_ASSIGNMENT)) {
       if (match.index < cursor) continue;
       let name;
       try { name = decodeURIComponent(match[2]).toLowerCase(); } catch { continue; }
-      const query = /[?;&]/.test(match[1]);
+      const dsn = dsns.some((sequence) => match.index + match[1].length >= sequence.index
+        && match.index < sequence.index + sequence[0].length);
+      // ? and & also cover standalone query fragments. A bare semicolon in
+      // source code is not a query: require a contiguous URL before it.
+      const query = /[?&]/.test(match[1]) || (match[1] === ';'
+        && /[A-Za-z][A-Za-z0-9+.-]*[ \t]*:[ \t]*\/(?:[ \t]*\/)?[ \t]*[^\s"'`<>]*$/.test(line.slice(0, match.index)));
       if (!AWS_SECRET_NAMES.has(name) && !(PASSWORD_NAMES.has(name) && (query || dsn))) continue;
       let start = match.index + match[0].length;
       let end = start;

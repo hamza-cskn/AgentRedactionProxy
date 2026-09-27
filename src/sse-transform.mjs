@@ -26,14 +26,17 @@ function collectChatCompletionChannels(event, channels) {
   }
 }
 
-function collectResponsesChannels(event, channels, sequenceIndex) {
+function collectResponsesChannels(event, channels) {
   if (typeof event.type !== 'string' || !event.type.endsWith('.delta')) return;
-  // item_id is what ties chunks of the same item together; without it, chunks
-  // cannot be safely reassembled, so fall back to a per-event key that never
-  // collides instead of risking merging unrelated deltas.
+  if (typeof event.delta !== 'string') return;
+  // Neither joining unidentified chunks nor restoring each prefix is safe.
+  // Let the proxy return the original fake response when identity is missing.
+  if (typeof event.item_id !== 'string' || !event.item_id) {
+    throw new Error('Cannot safely restore an unidentified SSE delta');
+  }
   const keyParts = [
     event.type,
-    event.item_id ?? `unidentified:${sequenceIndex}`,
+    event.item_id,
     event.output_index,
     event.content_index,
     event.summary_index,
@@ -42,6 +45,13 @@ function collectResponsesChannels(event, channels, sequenceIndex) {
 }
 
 function collectAnthropicChannels(event, channels) {
+  if (event.type === 'content_block_start') {
+    const block = event.content_block;
+    if (block?.type === 'text' || block?.type === 'thinking') {
+      addChannel(channels, `block:${event.index}:${block.type}_delta`, block, block.type);
+    }
+    return;
+  }
   if (event.type !== 'content_block_delta' || !event.delta) return;
   const fieldByType = {
     text_delta: 'text',
@@ -69,9 +79,9 @@ function collectGeminiChannels(event, channels) {
   }
 }
 
-function collectChannels(protocol, event, channels, sequenceIndex) {
+function collectChannels(protocol, event, channels) {
   if (protocol === 'chat-completions') collectChatCompletionChannels(event, channels);
-  if (protocol === 'responses') collectResponsesChannels(event, channels, sequenceIndex);
+  if (protocol === 'responses') collectResponsesChannels(event, channels);
   if (protocol === 'anthropic') collectAnthropicChannels(event, channels);
   if (protocol === 'gemini') collectGeminiChannels(event, channels);
 }
@@ -155,7 +165,7 @@ export async function deobfuscateSse(text, protocol, store) {
     const event = parseEventBlock(parts[index], index);
     if (!event) continue;
     events.push(event);
-    collectChannels(protocol, event.value, channels, event.partIndex);
+    collectChannels(protocol, event.value, channels);
   }
 
   // Streamed fields must only be restored after reassembly. Scanning their
