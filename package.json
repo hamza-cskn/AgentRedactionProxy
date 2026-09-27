@@ -1,0 +1,15 @@
+{
+  "name": "opencode-ipv4-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.mjs",
+    "status": "node src/main.mjs status",
+    "test": "node --test",
+    "test:opencode": "IPV4_PROXY_OPENCODE_TEST=1 node --test test/opencode.test.mjs"
+  }
+}

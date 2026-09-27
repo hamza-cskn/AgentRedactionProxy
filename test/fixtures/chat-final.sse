@@ -1,0 +1,8 @@
+data: {"id":"chat-final","object":"chat.completion.chunk","created":0,"model":"ipv4-test","choices":[{"index":0,"delta":{"role":"assistant","content":"Checked 192"},"finish_reason":null}]}
+
+data: {"id":"chat-final","object":"chat.completion.chunk","created":0,"model":"ipv4-test","choices":[{"index":0,"delta":{"content":".0.2.1"},"finish_reason":null}]}
+
+data: {"id":"chat-final","object":"chat.completion.chunk","created":0,"model":"ipv4-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}
+
+data: [DONE]
+

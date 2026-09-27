@@ -1,0 +1,10 @@
+data: {"id":"chat-test","object":"chat.completion.chunk","created":0,"model":"ipv4-test","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_test","type":"function","function":{"name":"bash","arguments":"{\"command\":\"printf '%s' '192"}}]},"finish_reason":null}]}
+
+data: {"id":"chat-test","object":"chat.completion.chunk","created":0,"model":"ipv4-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":".0.2"}}]},"finish_reason":null}]}
+
+data: {"id":"chat-test","object":"chat.completion.chunk","created":0,"model":"ipv4-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":".1'\",\"description\":\"Print test address\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chat-test","object":"chat.completion.chunk","created":0,"model":"ipv4-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}
+
+data: [DONE]
+
