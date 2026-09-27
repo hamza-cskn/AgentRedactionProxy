@@ -1,24 +1,12 @@
 import { transformJsonText } from './json-text.mjs';
+import { resolveRedactionLimits } from './redaction-limits.mjs';
 
 // These are intentionally narrow. Generic long strings, UUIDs, and timestamps
 // are useful agent context, not reliable evidence of a credential.
 const URL_SCHEME = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*[ \t]*:[ \t]*\/(?:[ \t]*\/)?/g;
 const ENCODED_URL = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*%3a%2f[^\s"'<>]*/gi;
-const PASSWORD_ASSIGNMENT = /(^|[?;& \t])([A-Za-z0-9_%+-]+)[ \t]*=[ \t]*/gm;
-const PASSWORD_NAMES = new Set([
-  'password', 'passwd', 'pwd', 'secret', 'token', 'api_key', 'api-key', 'apikey',
-  'access_token', 'refresh_token', 'id_token', 'auth_token', 'client_secret', 'private_token', 'sig',
-]);
-const AWS_SECRET_NAMES = new Set(['aws_secret_access_key', 'aws_session_token']);
-const DSN_FIELD = /(?:^|[; \t])(?:host|hostaddr|dbname|server|driver|user(?:[ \t]+id)?|uid)[ \t]*=/i;
-// Adjacent assignments form a connection string; unrelated code on the same
-// line ("const host = ...; const token = ...") does not.
-const DSN_ASSIGNMENT = String.raw`[A-Za-z_][A-Za-z0-9_]*(?:[ \t]+[Ii][Dd])?[ \t]*=[ \t]*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;"'\x60]+)?`;
-const DSN_SEQUENCE = new RegExp(`(?<![A-Za-z0-9_])(?:${DSN_ASSIGNMENT})(?:[; \\t]+${DSN_ASSIGNMENT})+`, 'g');
-const QUERY_VALUE_END = /[&#;"'<>]|(?<![ \t])[ \t]+(?=[A-Za-z][A-Za-z0-9+.-]*[ \t]*:[ \t]*\/)/;
-const DSN_VALUE_END = /[&#;"'<>]|(?<![ \t])[ \t]+(?=[A-Za-z_][A-Za-z0-9_]*[ \t]*=|[A-Za-z][A-Za-z0-9+.-]*[ \t]*:[ \t]*\/)/;
 const MAX_USERINFO_CHARS = 512;
-const PORT_VALUE = /^(?:\d+|port|PORT|%s|\$[A-Za-z_][A-Za-z0-9_]*|\$?\{[A-Za-z_][A-Za-z0-9_.]*(?::-[A-Za-z0-9_]+)?\})[.,;)\]}`]*$/;
+const PORT_VALUE = /^(?:\d+|port|PORT|%s|\$[A-Za-z_][A-Za-z0-9_]*|\$?\{[A-Za-z_][A-Za-z0-9_.]*(?::-[A-Za-z0-9_]+)?\})[!.,;)\]}`]*$/;
 const AUTHORITY_TERMINATORS = new Set(['@', '/', '?', '#', '\r', '\n', '"', "'", '<', '>']);
 const PRIVATE_KEY_START = /-----BEGIN ((?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/g;
 const UNSAFE_PRIVATE_KEY = /-----(?:BEGIN|END) (?:(?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----|\bPuTTY-User-Key-File-\d+:/;
@@ -28,6 +16,11 @@ const UNSAFE_PRIVATE_KEY = /-----(?:BEGIN|END) (?:(?:[A-Z0-9]+ )?PRIVATE KEY|PGP
 // base64url characters (api-docs.npmjs.com, docs.pypi.org/api/secrets/).
 const API_KEY = /(?<![A-Za-z0-9])(?:github_pat_[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_-]{20,}|gl(?:pat|oas|dt|rt|rtr|cbt|ptt|ft|imt|agent|wt|soat|ffct)-[A-Za-z0-9_-]{8,}|xox[bp]-[A-Za-z0-9_-]{10,}|xapp-[A-Za-z0-9_-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9_-]{8,}|whsec_[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}|ya29\.[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9_-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16,}|npm_[A-Za-z0-9]{36}[A-Za-z0-9_-]*|pypi-[A-Za-z0-9_-]{85,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+)/g;
 const WEB_TOKEN = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]+={0,2}(?:\.[A-Za-z0-9_-]*={0,2}){2,}/g;
+const BASE64_RUN = /[A-Za-z0-9+/_-]+={0,2}/g;
+
+function checkSize(size, maximum) {
+  if (size > maximum) throw new Error('Redaction candidate exceeds configured limit');
+}
 
 const horizontalSpace = (char) => char === ' ' || char === '\t';
 
@@ -91,50 +84,16 @@ function redactUrlPasswords(value) {
   return { body: body + value.slice(cursor), count };
 }
 
-function redactPasswordParameters(value) {
-  let count = 0;
-  const body = value.replace(/[^\r\n]+/g, (line) => {
-    const dsns = [...line.matchAll(DSN_SEQUENCE)].filter((match) => DSN_FIELD.test(match[0]));
-    let cursor = 0;
-    let output = '';
-    for (const match of line.matchAll(PASSWORD_ASSIGNMENT)) {
-      if (match.index < cursor) continue;
-      let name;
-      try { name = decodeURIComponent(match[2]).toLowerCase(); } catch { continue; }
-      const dsn = dsns.some((sequence) => match.index + match[1].length >= sequence.index
-        && match.index < sequence.index + sequence[0].length);
-      // ? and & also cover standalone query fragments. A bare semicolon in
-      // source code is not a query: require a contiguous URL before it.
-      const query = /[?&]/.test(match[1]) || (match[1] === ';'
-        && /[A-Za-z][A-Za-z0-9+.-]*[ \t]*:[ \t]*\/(?:[ \t]*\/)?[ \t]*[^\s"'`<>]*$/.test(line.slice(0, match.index)));
-      if (!AWS_SECRET_NAMES.has(name) && !(PASSWORD_NAMES.has(name) && (query || dsn))) continue;
-      let start = match.index + match[0].length;
-      let end = start;
-      const quote = line[start];
-      if (quote === '"' || quote === "'") {
-        start += 1;
-        end = start;
-        while (end < line.length && line[end] !== quote) {
-          if (line[end] === '\\') end += 1;
-          end += 1;
-        }
-        if (end >= line.length) throw new Error('Unsafe password parameter');
-      } else {
-        const boundary = (query ? QUERY_VALUE_END : DSN_VALUE_END).exec(line.slice(start));
-        end = boundary ? start + boundary.index : line.length;
-        while (end > start && horizontalSpace(line[end - 1])) end -= 1;
-      }
-      if (start === end) continue;
-      output += `${line.slice(cursor, start)}REDACTED_PASSWORD`;
-      cursor = end;
-      count += 1;
-    }
-    return output + line.slice(cursor);
-  });
-  return { body, count };
-}
-
-function redactValue(value, decodedUrl = false) {
+function redactValue(value, limits, decodedUrl = false) {
+  // Size guards are not credential classifiers. Check before any replacement
+  // can hide an oversized candidate; never decode arbitrary base64 blobs.
+  for (const [blob] of value.matchAll(BASE64_RUN)) checkSize(blob.length, limits.maxBase64Chars);
+  for (const [token] of value.matchAll(API_KEY)) checkSize(token.length, limits.maxApiTokenChars);
+  for (const [token] of value.matchAll(WEB_TOKEN)) {
+    checkSize(token.length, limits.maxJwtChars);
+    const header = token.slice(0, token.indexOf('.')).replace(/=+$/, '');
+    checkSize(Math.floor(header.length * 3 / 4), limits.maxJwtHeaderBytes);
+  }
   let count = 0;
   let cursor = 0;
   let body = '';
@@ -157,13 +116,12 @@ function redactValue(value, decodedUrl = false) {
     if (decodedUrl) throw new Error('Unsafe encoded URL');
     let decoded;
     try { decoded = decodeURIComponent(encoded); } catch { throw new Error('Unsafe encoded URL'); }
-    if (redactValue(decoded, true).count > 0) throw new Error('Unsafe encoded credential URL');
+    if (redactValue(decoded, limits, true).count > 0) throw new Error('Unsafe encoded credential URL');
   }
 
   const urls = redactUrlPasswords(body);
-  const parameters = redactPasswordParameters(urls.body);
-  count += urls.count + parameters.count;
-  body = parameters.body.replace(API_KEY, () => {
+  count += urls.count;
+  body = urls.body.replace(API_KEY, () => {
     count += 1;
     return '[REDACTED_API_KEY]';
   });
@@ -180,6 +138,7 @@ function redactValue(value, decodedUrl = false) {
   return { body, count };
 }
 
-export function redactSecrets(text) {
-  return transformJsonText(text, redactValue);
+export function redactSecrets(text, redactionLimits) {
+  const limits = resolveRedactionLimits(redactionLimits);
+  return transformJsonText(text, (value) => redactValue(value, limits));
 }

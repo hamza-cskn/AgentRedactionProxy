@@ -23,6 +23,7 @@ async function main() {
   for (const route of ROUTES) {
     const server = createProxy({
       mode: config.mode,
+      redactionLimits: config.redactionLimits,
       store,
       upstreamBase: route.upstream,
       protectAllPostBodies: true,

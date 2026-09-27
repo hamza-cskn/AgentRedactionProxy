@@ -39,7 +39,7 @@ It replaces real IPv4 addresses with safe RFC 5737 documentation IPs before requ
 | Feature | Details |
 | :--- | :--- |
 | **IPv4 Masking & Restoration** | 1:1 mapping of real IPv4s to documentation IPs. AWS private hostnames (e.g., `ip-10-20-30-40.ec2.internal`) are also recognized and mapped. |
-| **Credential Redaction** | Permanent one-way redaction of API keys (OpenAI, Anthropic, GitHub, GitLab, AWS, Slack, Stripe, Google, Hugging Face, PyPI, npm), JWT/JWE tokens, PEM/PGP private keys, and URL/DSN passwords (`user:pass@host`). |
+| **Credential Redaction** | Permanent one-way redaction of recognizable API-token formats (including AWS access key IDs), JWT/JWE tokens, PEM/PGP private keys, and positional URL passwords (`user:pass@host`). Field and parameter names do not classify values as secrets. |
 | **Fail-Closed Security** | Rejects requests (HTTP 502) if secret redaction fails, credentials appear malformed, or mapping limits are reached. |
 | **SSE Stream Support** | Reassembles streamed deltas (OpenAI Responses, Anthropic Messages), including Anthropic initial block text, before restoring IPs. Responses string deltas without an `item_id` leave the entire response unchanged with fake addresses and an `x-ipv4-proxy-warning` header; restoration never guesses their grouping. |
 | **Zero Dependencies** | Built with native Node.js ESM. No external packages required. |
@@ -113,19 +113,34 @@ Configure proxy behavior in `config.json`:
 
 ```json
 {
-  "mode": "paranoic"
+  "mode": "paranoic",
+  "redactionLimits": {
+    "maxApiTokenChars": 4096,
+    "maxJwtChars": 16384,
+    "maxJwtHeaderBytes": 4096,
+    "maxBase64Chars": 65536
+  }
 }
 ```
 
 - `"paranoic"` (default): Strict fail-closed policy. Durably commits mappings before forwarding. Rejects outbound requests if redaction or storage fails.
 - `"default"`: Same transformation logic, but requests containing no real IPv4 addresses can bypass storage failures with a warning header.
 
+### Candidate size limits
+
+The values above are configurable defaults. Omitted entries use their defaults; overrides must be integers from 1 through 67108864. Restart the proxy after editing the configuration.
+
+- API-token and JWT/JWE limits count the full ASCII candidate, including prefixes and separators. JWT header size is checked against its decoded byte length before decoding or parsing.
+- The arbitrary-blob limit counts each contiguous standard-base64/base64url-like run, including padding, in decoded JSON strings or plain text. This is a size guard, not a secret detector: it can also block long ordinary identifiers and base64 attachments/data URLs. Line-wrapped or separately stored fragments are not joined into one blob.
+- Exceeding any limit rejects the outbound request with HTTP 502 in **both modes**, without forwarding it, truncating it, or including the candidate in logs/errors. Checks run before redaction can remove a candidate. Malformed JWT-like candidates are also bounded before header parsing.
+- Arbitrary base64 is not decoded or recursively searched for hidden secrets. The existing 64 MiB body limit remains separate; these guards do not enable incremental streaming or limit inbound restoration.
+
 ### Literal matching boundaries
 
 - Numeric ports and common literal port placeholders (`port`, `PORT`, `$PORT`, `${PORT}`, `${PORT:-3000}`, `{port}`, `%s`) are accepted inside ordinary prose and code. Expressions are not evaluated; actual URL passwords remain protected.
-- Connection-string password matching uses adjacent assignments, not an unrelated `host=` anywhere on the line. A standalone code semicolon is not treated as a URL parameter separator.
+- There is no field-name-based detection: `password=`, `token=`, and AWS secret assignment names do not trigger redaction in query strings, connection-string assignments, code, or configuration. Values are still scanned for recognizable secret formats and IPv4 addresses, regardless of their labels. Opaque passwords and AWS secret/session values without a recognized format are not protected by their names.
 - npm and PyPI matching follows their documented token shapes ([npm](https://api-docs.npmjs.com/), [PyPI](https://docs.pypi.org/api/secrets/)). Filename extensions never exempt an otherwise matching token. Ambiguous `sk-` and `hf_` names remain conservatively redacted.
-- Generic `.env`/JSON/YAML passwords, Authorization headers, and `curl -u` are not yet covered as separate formats. Recognized token patterns inside them are still redacted. PEM-marker fail-closed behavior is unchanged.
+- HTTP header detection is out of scope. Generic `.env`/JSON/YAML password fields and `curl -u` are not covered as separate formats. Recognized token patterns inside text are still redacted. PEM-marker fail-closed behavior is unchanged.
 
 ---
 

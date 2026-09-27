@@ -52,10 +52,10 @@ test('redacts URL passwords across schemes while preserving connection structure
     'postgres://db.example/app',
   ].join(' ');
   const result = redactSecrets(input);
-  assert.equal(result.count, 3);
-  assert.equal(result.body.includes('hunter2'), false);
+  assert.equal(result.count, 2);
+  assert.equal(result.body.includes(':hunter2@'), false);
   assert.equal(result.body.includes('rediss://:REDACTED_PASSWORD@cache.example/0'), true);
-  assert.equal(result.body.includes('jdbc:postgresql://db.example/app?user=alice&password=REDACTED_PASSWORD'), true);
+  assert.equal(result.body.includes('jdbc:postgresql://db.example/app?user=alice&password=hunter2'), true);
   assert.equal(result.body.includes('mongdb : / / app_user : REDACTED_PASSWORD @ 10.20.30.40:27017/analytics_db?replicaSet=rs0'), true);
   assert.equal(result.body.includes('postgres://db.example/app'), true);
 });
@@ -162,17 +162,17 @@ const redactedTexts = [
   ['spaces around delimiters', 'mongdb : / / alice : secret @ db.example/app', 'mongdb : / / alice : REDACTED_PASSWORD @ db.example/app'],
   ['tabs around delimiters', 'mongo\t:\t/\t/\talice\t:\tsecret\t@\tdb.example/app', 'mongo\t:\t/\t/\talice\t:\tREDACTED_PASSWORD\t@\tdb.example/app'],
   ['JDBC userinfo', 'jdbc:postgresql://alice:secret@db.example/app', 'jdbc:postgresql://alice:REDACTED_PASSWORD@db.example/app'],
-  ['JDBC query password', 'jdbc:postgresql://db.example/app?user=alice&password=secret', 'jdbc:postgresql://db.example/app?user=alice&password=REDACTED_PASSWORD'],
-  ['JDBC semicolon password', 'jdbc:sqlserver://db.example;user=alice;password=secret;encrypt=true', 'jdbc:sqlserver://db.example;user=alice;password=REDACTED_PASSWORD;encrypt=true'],
-  ['mixed-case query name and surrounding spaces', 'https://db.example/?PaSsWoRd = secret &mode=read', 'https://db.example/?PaSsWoRd = REDACTED_PASSWORD &mode=read'],
-  ['query password containing spaces', 'https://db.example/?password=two secret words&mode=read', 'https://db.example/?password=REDACTED_PASSWORD&mode=read'],
-  ['double-quoted query password', 'https://db.example/?password="two secret words"&mode=read', 'https://db.example/?password="REDACTED_PASSWORD"&mode=read'],
-  ['single-quoted query password', "https://db.example/?password='two secret words'&mode=read", "https://db.example/?password='REDACTED_PASSWORD'&mode=read"],
-  ['encoded query parameter name', 'https://db.example/?pass%77ord=secret&mode=read', 'https://db.example/?pass%77ord=REDACTED_PASSWORD&mode=read'],
-  ['repeated password query parameters', 'https://db.example/?password=first&password=second', 'https://db.example/?password=REDACTED_PASSWORD&password=REDACTED_PASSWORD', 2],
-  ['userinfo and query password', 'postgres://alice:first@db.example/app?password=second', 'postgres://alice:REDACTED_PASSWORD@db.example/app?password=REDACTED_PASSWORD', 2],
+  ['field names do not classify: JDBC query password', 'jdbc:postgresql://db.example/app?user=alice&password=secret', 'jdbc:postgresql://db.example/app?user=alice&password=secret', 0],
+  ['field names do not classify: JDBC semicolon password', 'jdbc:sqlserver://db.example;user=alice;password=secret;encrypt=true', 'jdbc:sqlserver://db.example;user=alice;password=secret;encrypt=true', 0],
+  ['field names do not classify: mixed-case query name and surrounding spaces', 'https://db.example/?PaSsWoRd = secret &mode=read', 'https://db.example/?PaSsWoRd = secret &mode=read', 0],
+  ['field names do not classify: query password containing spaces', 'https://db.example/?password=two secret words&mode=read', 'https://db.example/?password=two secret words&mode=read', 0],
+  ['field names do not classify: double-quoted query password', 'https://db.example/?password="two secret words"&mode=read', 'https://db.example/?password="two secret words"&mode=read', 0],
+  ['field names do not classify: single-quoted query password', "https://db.example/?password='two secret words'&mode=read", "https://db.example/?password='two secret words'&mode=read", 0],
+  ['field names do not classify: encoded query parameter name', 'https://db.example/?pass%77ord=secret&mode=read', 'https://db.example/?pass%77ord=secret&mode=read', 0],
+  ['field names do not classify: repeated password query parameters', 'https://db.example/?password=first&password=second', 'https://db.example/?password=first&password=second', 0],
+  ['userinfo and query password', 'postgres://alice:first@db.example/app?password=second', 'postgres://alice:REDACTED_PASSWORD@db.example/app?password=second', 1],
   ['API token as userinfo password', `postgres://alice:${github}@db.example/app`, 'postgres://alice:REDACTED_PASSWORD@db.example/app'],
-  ['API token as query password', `https://db.example/?token=${github}`, 'https://db.example/?token=REDACTED_PASSWORD'],
+  ['API token as query password', `https://db.example/?token=${github}`, `https://db.example/?token=${apiMarker}`],
   ['different URLs on separate lines', 'postgres://alice:first@one.example/app\nredis://:second@two.example/0', 'postgres://alice:REDACTED_PASSWORD@one.example/app\nredis://:REDACTED_PASSWORD@two.example/0', 2],
   ['all categories together', `${github}\n${jwt}\n${privateKey}\npostgres://alice:secret@db.example/app`, `${apiMarker}\n${jwtMarker}\n${pemMarker}\npostgres://alice:REDACTED_PASSWORD@db.example/app`, 4],
   ['malformed JSON still contains a literal token', `{"token":"${github}",`, `{"token":"${apiMarker}",`],
@@ -189,7 +189,8 @@ for (const name of ['passwd', 'pwd', 'secret', 'token', 'api_key', 'api-key', 'a
   redactedTexts.push([
     `${name} query parameter`,
     `https://db.example/?${name}=secret&mode=read`,
-    `https://db.example/?${name}=REDACTED_PASSWORD&mode=read`,
+    `https://db.example/?${name}=secret&mode=read`,
+    0,
   ]);
 }
 
@@ -201,6 +202,7 @@ for (const [name, input, expected, count = 1] of redactedTexts) {
 }
 
 const unchangedTexts = [
+  ['unterminated query value is not classified by name', 'https://db.example/?password="secret words&mode=read'],
   ['empty text', ''],
   ['ordinary prose', 'Explain how to configure the database.'],
   ['obvious short placeholders', 'sk-example ghp_example glpat-example npm_example'],
@@ -249,7 +251,6 @@ const unsafeTexts = [
   ['missing scheme slash', 'mongdb:/alice:secret@host.example'],
   ['unterminated PEM', '-----BEGIN PRIVATE KEY-----\nQUJDREVGRw=='],
   ['mismatched PEM footer', '-----BEGIN RSA PRIVATE KEY-----\nQUJDREVGRw==\n-----END EC PRIVATE KEY-----'],
-  ['unterminated quoted query password', 'https://db.example/?password="secret words&mode=read'],
 ];
 
 for (const [name, input] of unsafeTexts) {

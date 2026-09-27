@@ -1,3 +1,9 @@
 {
-  "mode": "paranoic"
+  "mode": "paranoic",
+  "redactionLimits": {
+    "maxApiTokenChars": 4096,
+    "maxJwtChars": 16384,
+    "maxJwtHeaderBytes": 4096,
+    "maxBase64Chars": 65536
+  }
 }

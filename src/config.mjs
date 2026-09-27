@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { resolveRedactionLimits } from './redaction-limits.mjs';
 
 const MODES = new Set(['paranoic', 'default']);
 
@@ -7,5 +8,5 @@ export async function loadConfig(configUrl) {
   if (!parsed || typeof parsed !== 'object' || !MODES.has(parsed.mode)) {
     throw new Error('config.json mode must be "paranoic" or "default"');
   }
-  return { mode: parsed.mode };
+  return { mode: parsed.mode, redactionLimits: resolveRedactionLimits(parsed.redactionLimits) };
 }

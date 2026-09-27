@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { loadConfig } from '../src/config.mjs';
+import { DEFAULT_REDACTION_LIMITS } from '../src/redaction-limits.mjs';
 
 for (const [mode, accepted] of [
   ['default', true],
@@ -18,7 +19,7 @@ for (const [mode, accepted] of [
     const configPath = path.join(directory, 'config.json');
     await writeFile(configPath, JSON.stringify({ mode }));
     if (accepted) {
-      assert.deepEqual(await loadConfig(configPath), { mode });
+      assert.deepEqual(await loadConfig(configPath), { mode, redactionLimits: DEFAULT_REDACTION_LIMITS });
     } else {
       await assert.rejects(loadConfig(configPath), {
         message: 'config.json mode must be "paranoic" or "default"',

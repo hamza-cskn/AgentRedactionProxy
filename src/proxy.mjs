@@ -2,6 +2,7 @@ import http from 'node:http';
 
 import { containsSensitiveIpv4 } from './mapping-store.mjs';
 import { redactSecrets } from './secret-redaction.mjs';
+import { resolveRedactionLimits } from './redaction-limits.mjs';
 import { deobfuscateSse, protocolForPath, stripV1Prefix } from './sse-transform.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -94,9 +95,11 @@ export function createProxy({
   maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
   upstreamTimeoutMs = 10 * 60 * 1000,
   maxConcurrentRequests = 8,
+  redactionLimits,
   logger = (line) => process.stderr.write(`${line}\n`),
   fetchImpl = fetch,
 }) {
+  const limits = resolveRedactionLimits(redactionLimits);
   let activeRequests = 0;
   return http.createServer(async (request, response) => {
     const startedAt = Date.now();
@@ -121,7 +124,7 @@ export function createProxy({
     const inference = request.method === 'POST' && (protocol !== null || protectAllPostBodies);
     let logPathname = '[redacted-endpoint]';
     try {
-      logPathname = redactSecrets(redactIpv4ForLogging(local.pathname)).body;
+      logPathname = redactSecrets(redactIpv4ForLogging(local.pathname), limits).body;
     } catch {
       // Strict credential checks may reject a path; never echo it or let a
       // logging-only transformation escape the request handler.
@@ -165,7 +168,7 @@ export function createProxy({
       if (inference && requestBody.length > 0) {
         try {
           const text = new TextDecoder('utf-8', { fatal: true }).decode(requestBody);
-          const redacted = redactSecrets(text);
+          const redacted = redactSecrets(text, limits);
           requestBody = Buffer.from(redacted.body, 'utf8');
           secretCount = redacted.count;
         } catch {

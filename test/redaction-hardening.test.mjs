@@ -12,7 +12,6 @@ import { redactSecrets } from '../src/secret-redaction.mjs';
 // modes: paranoic must block anything it cannot redact with certainty, while
 // default may forward ambiguous text only after the secret is removed.
 const key = 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78';
-const opaque = 'opaqueValue123';
 const pemBody = 'QUJDREVGRw==';
 
 // Each case must either be redacted or rejected; its fragments must never
@@ -27,24 +26,21 @@ const leakTexts = [
   ['PuTTY private key', `PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\nPublic-Lines: 1\nAAAA\nPrivate-Lines: 1\n${pemBody}\nPrivate-MAC: ${key}`, [pemBody, key]],
   ['indented PEM in YAML', `tls:\n  key: |\n    -----BEGIN PRIVATE KEY-----\n    ${pemBody}\n    -----END PRIVATE KEY-----`, [pemBody]],
   ['AWS access key ID', 'aws_access_key_id = AKIAZ7Q3EXAMPLE4KEY2', ['AKIAZ7Q3EXAMPLE4KEY2']],
-  ['AWS secret access key', `aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/${key}`, [key]],
   ['Google OAuth access token', `ya29.${key}_synthetic-tail`, [key]],
   ['Hugging Face token', `hf_${key}`, [key]],
   ['Slack incoming webhook', `https://hooks.slack.com/services/T01ABCDEF/B01ABCDEF/${key}`, [key]],
-  ['libpq keyword DSN password', 'host=db.example user=alice password=hunter2 dbname=app', ['hunter2']],
-  ['ADO.NET password', 'Server=db.example;User Id=alice;Password=hunter2;Encrypt=true', ['hunter2']],
-  ['ODBC Pwd', 'Driver={PostgreSQL};Server=db.example;Uid=alice;Pwd=hunter2;', ['hunter2']],
   ['percent-encoded credential URL', 'next=postgres%3A%2F%2Falice%3Ahunter2%40db.example%2Fapp', ['hunter2']],
   ['password followed by two words and an email', 'mongo://alice:hunter2 see me@example.com', ['hunter2']],
   ['git token as userinfo password', `https://x-access-token:ghs_${key}@github.com/org/repo.git`, [key]],
   ['git token as bare userinfo', `https://ghp_${key}@github.com/org/repo.git`, [key]],
 ];
-for (const name of ['access_token', 'refresh_token', 'id_token', 'auth_token', 'client_secret', 'private_token', 'sig']) {
-  leakTexts.push([`${name} query parameter`, `https://api.example/cb?state=abc&${name}=${opaque}&mode=read`, [opaque]]);
-}
 
 // Text that must pass through untouched so ordinary agent work keeps working.
 const benignTexts = [
+  ['AWS secret assignment names are not classifiers', `aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/${key}`],
+  ['libpq assignment names are not classifiers', 'host=db.example user=alice password=hunter2 dbname=app'],
+  ['ADO.NET assignment names are not classifiers', 'Server=db.example;User Id=alice;Password=hunter2;Encrypt=true'],
+  ['ODBC assignment names are not classifiers', 'Driver={PostgreSQL};Server=db.example;Uid=alice;Pwd=hunter2;'],
   ['JavaScript URL template', 'http://${HOST}:${PORT}/api'],
   ['Python URL template', 'f"http://{host}:{port}"'],
   ['shell port variable', 'http://localhost:$PORT'],
@@ -64,6 +60,10 @@ const benignTexts = [
   ['mailto and URN', 'mailto:alice@example.com urn:ietf:rfc:3986'],
   ['token-like prose words', 'The token count and password policy are documented.'],
 ];
+
+for (const name of ['access_token', 'refresh_token', 'id_token', 'auth_token', 'client_secret', 'private_token', 'sig']) {
+  benignTexts.push([`${name} query name is not a classifier`, `https://api.example/cb?state=abc&${name}=opaqueValue123&mode=read`]);
+}
 
 const assertSafeRejection = (error, fragments) => {
   assert.ok(error instanceof Error);
@@ -147,7 +147,7 @@ async function send(mode, body) {
 
 const ipInSecretContext = [
   ['URL password and host IP', 'mongo://alice:hunter2@10.20.30.40:27017/app', ['hunter2', '10.20.30.40']],
-  ['libpq DSN with host IP', 'host=10.20.30.40 user=alice password=hunter2', ['hunter2', '10.20.30.40']],
+  ['libpq DSN with host IP', 'host=10.20.30.40 user=alice password=hunter2', ['10.20.30.40']],
   ['token beside IP', `10.20.30.40 ghp_${key}-old`, [key, '10.20.30.40']],
 ];
 
