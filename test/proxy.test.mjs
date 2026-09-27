@@ -280,30 +280,76 @@ test('keeps MongoDB metadata and obfuscates every host IP while hiding the passw
   assert.equal(captured[1], 'mongdb : / / app_user : REDACTED_PASSWORD @ 192.0.2.2:27017,192.0.2.1:27017/analytics_db');
 });
 
-test('never-see blocks malformed credential URLs that cannot be safely redacted', async (context) => {
-  let upstreamCalls = 0;
-  const upstream = http.createServer((_request, response) => {
-    upstreamCalls += 1;
-    response.end('{}');
+for (const mode of ['never-see', 'non-paranoic']) {
+  for (const [name, input, expected] of [
+    ['plain IP', 'inspect 10.20.30.40', 'inspect 192.0.2.1'],
+    ['IP and API token', `10.20.30.40 ghp_${'a'.repeat(32)}`, '192.0.2.1 [REDACTED_API_KEY]'],
+    ['IP and private key', '10.20.30.40\n-----BEGIN PRIVATE KEY-----\nQUJDREVGRw==\n-----END PRIVATE KEY-----', '192.0.2.1\n[REDACTED_PRIVATE_KEY]'],
+    ['IP and JWT', `10.20.30.40 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleGFtcGxlIn0.${'c'.repeat(24)}`, '192.0.2.1 [REDACTED_JWT]'],
+    ['multi-host URL', 'mongodb://alice:secret@10.20.30.40:27017,10.20.30.41:27017/app?replicaSet=rs0', 'mongodb://alice:REDACTED_PASSWORD@192.0.2.1:27017,192.0.2.2:27017/app?replicaSet=rs0'],
+    ['IP-shaped password is not reversibly mapped', 'mongodb://alice:10.20.30.40@10.20.30.41/app', 'mongodb://alice:REDACTED_PASSWORD@192.0.2.1/app'],
+    ['escaped JSON', String.raw`{"input":"10\u002e20\u002e30\u002e40 ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","n":9007199254740993}`, '{"input":"192.0.2.1 [REDACTED_API_KEY]","n":9007199254740993}'],
+    ['nested tool arguments', JSON.stringify({ arguments: JSON.stringify({ url: 'mongdb : / / alice : secret @ 10.20.30.40/app' }) }), JSON.stringify({ arguments: JSON.stringify({ url: 'mongdb : / / alice : REDACTED_PASSWORD @ 192.0.2.1/app' }) })],
+    ['ordinary text', 'Use mongodb://db.example/app?replicaSet=rs0', 'Use mongodb://db.example/app?replicaSet=rs0'],
+  ]) {
+    test(`${mode} outbound text: ${name}`, async (context) => {
+      const captured = [];
+      const proxy = createProxy({
+        mode,
+        store: await createStore(),
+        protectAllPostBodies: true,
+        logger: () => {},
+        fetchImpl: async (_url, { body }) => {
+          captured.push(body.toString('utf8'));
+          return new Response('{}');
+        },
+      });
+      const origin = await listen(proxy);
+      context.after(() => close(proxy));
+      for (const endpoint of ['/v1/responses', '/v1/messages', '/v1/messages/count_tokens']) {
+        const response = await fetch(`${origin}${endpoint}`, { method: 'POST', body: input });
+        assert.equal(await response.text(), '{}');
+        assert.equal(response.status, 200);
+        assert.equal(captured.at(-1), expected);
+      }
+      assert.deepEqual(captured, [expected, expected, expected], 'both clients must reuse identical IP mappings');
+    });
+  }
+}
+
+for (const [name, input] of [
+  ['space in password', 'mongdb://user:pass word@10.20.30.40'],
+  ['several words in password', 'mongdb://user:several secret words here@10.20.30.40'],
+  ['incomplete private key', '10.20.30.40\n-----BEGIN PRIVATE KEY-----\nQUJDREVGRw=='],
+]) {
+  test(`never-see blocks unsafe text: ${name}`, async (context) => {
+    let upstreamCalls = 0;
+    const upstream = http.createServer((_request, response) => {
+      upstreamCalls += 1;
+      response.end('{}');
+    });
+    const upstreamOrigin = await listen(upstream);
+    context.after(() => close(upstream));
+    const proxy = createProxy({
+      mode: 'never-see',
+      store: await createStore(),
+      upstreamBase: `${upstreamOrigin}/v1`,
+      protectAllPostBodies: true,
+      logger: () => {},
+    });
+    const proxyOrigin = await listen(proxy);
+    context.after(() => close(proxy));
+    const response = await fetch(`${proxyOrigin}/v1/messages`, {
+      method: 'POST',
+      body: input,
+    });
+    assert.equal(upstreamCalls, 0);
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      error: 'Outbound secret redaction failed; request was not forwarded',
+    });
   });
-  const upstreamOrigin = await listen(upstream);
-  context.after(() => close(upstream));
-  const proxy = createProxy({
-    mode: 'never-see',
-    store: await createStore(),
-    upstreamBase: `${upstreamOrigin}/v1`,
-    protectAllPostBodies: true,
-    logger: () => {},
-  });
-  const proxyOrigin = await listen(proxy);
-  context.after(() => close(proxy));
-  const response = await fetch(`${proxyOrigin}/v1/messages`, {
-    method: 'POST',
-    body: 'mongdb://user:pass word@host',
-  });
-  assert.equal(response.status, 502);
-  assert.equal(upstreamCalls, 0);
-});
+}
 
 test('unreadable outbound text fails closed even in non-paranoic mode', async (context) => {
   let upstreamCalls = 0;
@@ -461,42 +507,69 @@ test('capacity exhaustion never forwards, including non-paranoic mode', async (c
   });
 });
 
-test('non-paranoic mode forwards raw body and returns a warning header', async (context) => {
-  let capturedBody = '';
-  const upstream = http.createServer(async (request, response) => {
-    capturedBody = await readRequest(request);
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end('{"output":"ok"}');
-  });
-  const upstreamOrigin = await listen(upstream);
-  context.after(() => close(upstream));
+// Stability may win only when no critical information escapes. A warning
+// header does not make forwarding an unredacted IPv4 address acceptable.
+for (const mode of ['never-see', 'non-paranoic']) {
+  for (const [name, input] of [
+    ['escaped JSON', String.raw`{"input":"10\u002e20\u002e30\u002e40"}`],
+    ['nested AWS hostname', JSON.stringify({ arguments: JSON.stringify({ host: 'ip-10-20-30-40.ec2.internal' }) })],
+  ]) {
+    test(`${mode} mapping failure blocks ${name}`, async (context) => {
+      const forwarded = [];
+      const proxy = createProxy({
+        mode,
+        store: {
+          obfuscate: async () => { throw new Error('state unavailable'); },
+          deobfuscate: async (text) => ({ body: text, count: 0 }),
+        },
+        logger: () => {},
+        fetchImpl: async (_url, { body }) => {
+          forwarded.push(body.toString('utf8'));
+          return new Response('{}');
+        },
+      });
+      const origin = await listen(proxy);
+      context.after(() => close(proxy));
+      const response = await fetch(`${origin}/v1/messages`, { method: 'POST', body: input });
+      await response.text();
+      assert.deepEqual(forwarded, []);
+      assert.equal(response.status, 502);
+    });
+  }
+}
 
-  const logs = [];
-  const proxy = createProxy({
-    mode: 'non-paranoic',
-    store: {
-      obfuscate: async () => { throw new Error('state unavailable'); },
-      deobfuscate: async (text) => ({ body: text, count: 0 }),
-    },
-    upstreamBase: `${upstreamOrigin}/zen/v1`,
-    logger: (line) => logs.push(line),
-  });
-  const proxyOrigin = await listen(proxy);
-  context.after(() => close(proxy));
+for (const mode of ['never-see', 'non-paranoic']) {
+  for (const code of ['EIO', 'MAPPING_DURABILITY_FAILED', 'MAPPING_CAPACITY_EXHAUSTED']) {
+    test(`${mode} never forwards IP text after ${code}`, async (context) => {
+      const captured = [];
+      const logs = [];
+      const proxy = createProxy({
+        mode,
+        store: {
+          obfuscate: async () => { throw Object.assign(new Error('state unavailable for 10.0.0.1'), { code }); },
+          deobfuscate: async (text) => ({ body: text, count: 0 }),
+        },
+        logger: (line) => logs.push(line),
+        fetchImpl: async (_url, { body }) => {
+          captured.push(body.toString('utf8'));
+          return new Response('{}');
+        },
+      });
+      const origin = await listen(proxy);
+      context.after(() => close(proxy));
 
-  const response = await fetch(`${proxyOrigin}/v1/responses`, {
-    method: 'POST',
-    body: '{"input":"10.0.0.1"}',
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(capturedBody, '{"input":"10.0.0.1"}');
-  assert.equal(
-    response.headers.get('x-ipv4-proxy-warning'),
-    'outbound-redaction-failed-raw-request-forwarded',
-  );
-  assert.equal(logs.some((line) => line.includes('10.0.0.1')), false);
-});
+      const response = await fetch(`${origin}/v1/responses`, {
+        method: 'POST',
+        body: '{"input":"10.0.0.1"}',
+      });
+      const body = await response.text();
+      assert.deepEqual(captured, [], 'an IP mapping failure must not forward raw text');
+      assert.equal(response.status, code === 'MAPPING_CAPACITY_EXHAUSTED' ? 507 : 502);
+      assert.equal(body.includes('10.0.0.1'), false);
+      assert.equal(logs.some((line) => line.includes('10.0.0.1')), false);
+    });
+  }
+}
 
 test('returns the fake response when inbound deobfuscation fails', async (context) => {
   const upstream = http.createServer(async (request, response) => {
@@ -693,6 +766,26 @@ test('redacts IPv4 addresses that appear in the logged endpoint path', async (co
 
   assert.equal(logs.some((line) => line.includes('10.0.0.1')), false);
   assert.equal(logs.some((line) => line.includes('[redacted-ipv4]')), true);
+});
+
+test('strict credential rejection in log metadata does not escape the request handler', async (context) => {
+  const logs = [];
+  const proxy = createProxy({
+    mode: 'never-see',
+    store: await createStore(),
+    protectAllPostBodies: true,
+    logger: (line) => logs.push(JSON.parse(line)),
+    fetchImpl: async () => new Response('{}'),
+  });
+  const origin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${origin}/v1/PuTTY-User-Key-File-3:/10.20.30.40`, {
+    method: 'POST', body: '{}',
+  });
+  assert.equal(await response.text(), '{}');
+  assert.equal(response.status, 200);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].endpoint, '[redacted-endpoint]');
 });
 
 test('rejects a response that exceeds the limit after deobfuscation', async (context) => {

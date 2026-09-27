@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 import {
   MappingStore,
+  containsSensitiveIpv4,
 } from '../src/mapping-store.mjs';
 
 async function statePath() {
@@ -39,6 +40,34 @@ test('preserves mappings across store restarts', async () => {
   const persisted = JSON.parse(await readFile(filePath, 'utf8'));
   assert.equal(persisted.mappings.length, 2);
 });
+
+test('AWS hostnames share persistent dotted-IP mappings and restore their original shape', async (context) => {
+  const filePath = await statePath();
+  context.after(() => fs.rm(path.dirname(filePath), { recursive: true, force: true }));
+  const store = await MappingStore.open(filePath);
+  const input = '10.20.30.40 ip-10-20-30-40.ec2.internal ip-10-20-30-40.eu-west-1.compute.internal';
+  const expected = '192.0.2.1 ip-192-0-2-1.ec2.internal ip-192-0-2-1.eu-west-1.compute.internal';
+  assert.deepEqual(await store.obfuscate(input), { body: expected, count: 3 });
+  assert.deepEqual(await store.obfuscate(expected), { body: expected, count: 0 });
+  const reopened = await MappingStore.open(filePath);
+  assert.deepEqual(await reopened.obfuscate(input), { body: expected, count: 3 });
+  assert.deepEqual(await reopened.deobfuscate(expected), { body: input, count: 3 });
+  assert.equal(JSON.parse(await readFile(filePath, 'utf8')).mappings.length, 1);
+});
+
+for (const [input, expected] of [
+  ['10.20.30.40', true],
+  ['ip-10-20-30-40.ec2.internal', true],
+  [String.raw`{"input":"10\u002e20\u002e30\u002e40"}`, true],
+  [JSON.stringify({ arguments: JSON.stringify({ host: 'ip-10-20-30-40.ec2.internal' }) }), true],
+  ['192.0.2.1 ip-192-0-2-1.ec2.internal', false],
+  ['ordinary text', false],
+  ['999.20.30.40 ip-999-20-30-40.ec2.internal', false],
+]) {
+  test(`stateless IPv4 safety check: ${input}`, () => {
+    assert.equal(containsSensitiveIpv4(input), expected);
+  });
+}
 
 test('passes RFC 5737 and invalid addresses unchanged', async () => {
   const store = await MappingStore.open(await statePath());
@@ -160,6 +189,55 @@ test('still refuses to match digit sequences that are not a real IPv4 address', 
   assert.equal((await store.obfuscate('10.0.0.1999')).body, '10.0.0.1999');
   assert.equal((await store.obfuscate('10.0.0.1999')).count, 0);
 });
+
+// Fresh state makes every text expectation deterministic; no real mappings or
+// provider credentials are used by this corpus.
+for (const [name, input, expected, count] of [
+  ['private address', '10.20.30.40', '192.0.2.1', 1],
+  ['loopback', '127.0.0.1', '192.0.2.1', 1],
+  ['public address', '8.8.8.8', '192.0.2.1', 1],
+  ['zero octets', '0.0.0.0', '192.0.2.1', 1],
+  ['maximum octets', '255.255.255.255', '192.0.2.1', 1],
+  ['octet digit boundaries', '9.10.99.100 199.200.249.250', '192.0.2.1 192.0.2.2', 2],
+  ['CIDR', '10.20.30.40/24', '192.0.2.1/24', 1],
+  ['host and port', '10.20.30.40:27017', '192.0.2.1:27017', 1],
+  ['punctuation', '(10.20.30.40),[10.20.30.40];10.20.30.40!', '(192.0.2.1),[192.0.2.1];192.0.2.1!', 3],
+  ['sentence ending', 'Connect to 10.20.30.40.', 'Connect to 192.0.2.1.', 1],
+  ['ellipsis', '...10.20.30.40...', '...192.0.2.1...', 1],
+  ['letter boundaries', 'host10.20.30.40internal', 'host192.0.2.1internal', 1],
+  ['Unicode context', 'host「10.20.30.40」adres', 'host「192.0.2.1」adres', 1],
+  ['newlines and tabs', '10.20.30.40\r\n\t10.20.30.40', '192.0.2.1\r\n\t192.0.2.1', 2],
+  ['multi-host URL', 'mongodb://alice:REDACTED_PASSWORD@10.20.30.40:27017,10.20.30.41:27017/app?ssl=true', 'mongodb://alice:REDACTED_PASSWORD@192.0.2.1:27017,192.0.2.2:27017/app?ssl=true', 2],
+  ['URL path and query', 'https://host.example/10.20.30.40?target=10.20.30.41', 'https://host.example/192.0.2.1?target=192.0.2.2', 2],
+  ['same address reused', '10.20.30.40 10.20.30.41 10.20.30.40', '192.0.2.1 192.0.2.2 192.0.2.1', 3],
+  ['JSON property and value', '{"10.20.30.40":"10.20.30.40","n":9007199254740993}', '{"192.0.2.1":"192.0.2.1","n":9007199254740993}', 2],
+  ['JSON array', '["10.20.30.40",null,true,42,"ordinary"]', '["192.0.2.1",null,true,42,"ordinary"]', 1],
+  ['JSON escaped digits and dots', String.raw`{"ip":"\u0031\u0030\u002e20\u002e30\u002e40"}`, '{"ip":"192.0.2.1"}', 1],
+  ['nested JSON', JSON.stringify({ arguments: JSON.stringify({ host: '10.20.30.40' }) }), JSON.stringify({ arguments: JSON.stringify({ host: '192.0.2.1' }) }), 1],
+  ['malformed JSON containing literal IP', '{"host":"10.20.30.40",', '{"host":"192.0.2.1",', 1],
+  ['mixed invalid and valid IPs', '999.20.30.40 10.20.30.40 10.20.30.999', '999.20.30.40 192.0.2.1 10.20.30.999', 1],
+  ['empty', '', '', 0],
+  ['ordinary prose', 'connect to db.example', 'connect to db.example', 0],
+  ['all reserved documentation ranges', '192.0.2.1 198.51.100.254 203.0.113.255', '192.0.2.1 198.51.100.254 203.0.113.255', 0],
+  ['first octet too large', '256.20.30.40', '256.20.30.40', 0],
+  ['second octet too large', '10.256.30.40', '10.256.30.40', 0],
+  ['third octet too large', '10.20.256.40', '10.20.256.40', 0],
+  ['fourth octet too large', '10.20.30.256', '10.20.30.256', 0],
+  ['too few octets', '10.20.30', '10.20.30', 0],
+  ['too many octets', '1.10.20.30.40', '1.10.20.30.40', 0],
+  ['digits attached on the left', '99910.20.30.40', '99910.20.30.40', 0],
+  ['digits attached on the right', '10.20.30.40999', '10.20.30.40999', 0],
+  ['timestamp', '2026-09-27T14:41:51.055Z', '2026-09-27T14:41:51.055Z', 0],
+]) {
+  test(`IPv4 text: ${name}`, async (context) => {
+    const filePath = await statePath();
+    context.after(() => fs.rm(path.dirname(filePath), { recursive: true, force: true }));
+    const store = await MappingStore.open(filePath);
+    assert.deepEqual(await store.obfuscate(input), { body: expected, count });
+    assert.deepEqual(await store.obfuscate(input), { body: expected, count }, 'repeat input must reuse mappings');
+    assert.deepEqual(await store.obfuscate(expected), { body: expected, count: 0 }, 'output must not be remapped');
+  });
+}
 
 test('leaves no temporary file behind when a save fails before rename', {
   skip: process.getuid?.() === 0 ? 'cannot restrict a root-owned directory' : false,

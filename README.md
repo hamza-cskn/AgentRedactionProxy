@@ -71,11 +71,13 @@ Set `mode` in `config.json`, then restart the proxy.
 ### `non-paranoic`
 
 - Requests and responses are normally transformed in the same way.
-- If IPv4 processing fails, the request is forwarded with raw IPv4 values but
-  with any recognized credentials still redacted. If credential processing
-  fails, the request is blocked in both modes.
-- Fail-open requests produce a body-free warning on stderr and add an
-  `x-ipv4-proxy-warning` response header.
+- IPv4 processing failures block requests containing real IPv4 addresses in
+  both modes. This check includes decoded JSON and recognized AWS hostnames.
+- A storage failure may be bypassed only if the already-credential-redacted
+  text contains no real IPv4 addresses. Such requests produce a body-free
+  warning on stderr and an `x-ipv4-proxy-warning` response header.
+- Credential-processing failures and exhausted mapping capacity block
+  requests in both modes; neither mode forwards recognized secrets on failure.
 
 ## Mapping
 
@@ -86,12 +88,15 @@ Set `mode` in `config.json`, then restart the proxy.
   never removed as stale automatically because doing so could remove a live
   lock. Atomic updates fsync both the file and containing directory before a
   newly mapped request is forwarded. If directory sync fails after the rename,
-  the mapping stays committed and `never-see` blocks forwarding. Subsequent
-  requests retry the durability check, including requests using existing mappings.
+  the mapping stays committed and both modes block requests containing real IPv4.
+  Subsequent requests retry the durability check, including requests using existing mappings.
 - Fake addresses are allocated sequentially from `192.0.2.1` through
   `192.0.2.254`, then `198.51.100.1` through `198.51.100.254`, and finally
   `203.0.113.1` through `203.0.113.254`.
 - Existing RFC 5737 addresses pass through unchanged.
+- AWS private hostnames such as `ip-10-20-30-40.ec2.internal` and
+  `ip-10-20-30-40.eu-west-1.compute.internal` share the mapping for `10.20.30.40`.
+  Obfuscation and restoration preserve their hyphenated hostname format.
 - After all 762 mappings are allocated, a request containing any new IPv4 is
   rejected with HTTP `507`. The request is never forwarded in either mode, and
   mappings tentatively created by that request are rolled back.
@@ -118,15 +123,21 @@ proxy processes are stopped. There is no automatic reset or stale-lock removal.
 ## Credential Redaction
 
 Outbound POST bodies are scanned for selected provider-token formats (including
-OpenAI, Anthropic, GitHub, GitLab, Slack, Stripe, Google, npm, PyPI, and
-SendGrid), PEM private-key blocks, JWTs, URL userinfo passwords, and
-password-like query values inside text. Tokens, keys, and JWTs become
+OpenAI, Anthropic, GitHub, GitLab, Slack, Stripe, Google, AWS, Hugging Face,
+npm, PyPI, and SendGrid), Slack incoming webhooks, PEM/PGP private-key blocks,
+JWT/JWE tokens, URL userinfo passwords, and password-like query values inside
+text. AWS secret-key assignments and passwords in libpq, ADO.NET, and ODBC
+connection strings are also recognized. Tokens, keys, and JWT/JWE tokens become
 type-labeled markers. URLs keep their original structure and username, but
 password values become `REDACTED_PASSWORD`; host IPv4 values are still mapped
 consistently. This works across URL schemes, including misspelled ones, and
 allows spaces around the `:`, `/`, and `@` separators. Ambiguous or overlong
-URL userinfo is blocked rather than forwarded. JSON strings and JSON encoded
-inside tool arguments are decoded before scanning. Recognized credentials are
+URL userinfo is blocked rather than forwarded. Truncated or mismatched private
+keys, PuTTY private-key blocks, and detected percent-encoded credential URLs
+are blocked. Query names may be percent-encoded; quoted query passwords are
+masked completely. Known token prefixes remain sensitive when attached to
+other text. JSON strings and JSON encoded inside tool arguments are decoded
+before scanning. Recognized credentials are
 never written to the IPv4 mapping file or restored into model responses; a
 tool that needs an exact redacted credential must obtain it locally instead.
 
@@ -178,8 +189,9 @@ fixed process-memory ceiling: parsing and SSE transformation create extra copies
 
 ## Security Boundary
 
-The `never-see` guarantee covers dotted-decimal IPv4 addresses and the
-recognized credential patterns above in plain-text content of POST bodies
+The `never-see` guarantee covers dotted-decimal IPv4 addresses, the recognized
+AWS private-hostname forms, and the recognized credential patterns above in
+plain-text content of POST bodies
 sent through either configured listener. It does not guarantee detection of
 every credential or other form of sensitive information.
 This includes decoded JSON strings and JSON encoded inside tool-argument

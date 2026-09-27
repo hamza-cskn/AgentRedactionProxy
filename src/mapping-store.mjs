@@ -17,6 +17,7 @@ const POOL_PREFIXES = [
 ];
 const OCTET = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
 const IPV4_PATTERN = new RegExp(`(^|[^0-9.]|(?<![0-9])\\.)(${OCTET}(?:\\.${OCTET}){3})(?!\\.?[0-9])`, 'g');
+const AWS_IPV4_PATTERN = new RegExp(`\\b(ip-)(${OCTET}(?:-${OCTET}){3})(?=\\.(?:ec2|[a-z0-9-]+\\.compute)\\.internal\\b)`, 'gi');
 const STATE_VERSION = 1;
 const POOL_SIZE = POOL_PREFIXES.length * 254;
 const LOCK_WAIT_MS = 5_000;
@@ -190,17 +191,29 @@ async function acquireLock(lockPath) {
 
 function replaceAddresses(text, lookup, fallback = null) {
   let count = 0;
-  IPV4_PATTERN.lastIndex = 0;
-  const body = text.replace(IPV4_PATTERN, (match, prefix, ip) => {
-    const replacement = lookup(ip);
-    if (replacement === ip) return match;
-    if (replacement === null || replacement === undefined) {
-      return fallback === null ? match : `${prefix}${fallback}`;
-    }
-    count += 1;
-    return `${prefix}${replacement}`;
-  });
+  let body = text;
+  for (const [pattern, hyphenated] of [[IPV4_PATTERN, false], [AWS_IPV4_PATTERN, true]]) {
+    pattern.lastIndex = 0;
+    body = body.replace(pattern, (match, prefix, address) => {
+      const ip = hyphenated ? address.replaceAll('-', '.') : address;
+      const replacement = lookup(ip);
+      if (replacement === ip) return match;
+      if (replacement === null || replacement === undefined) {
+        return fallback === null ? match : `${prefix}${fallback}`;
+      }
+      count += 1;
+      return `${prefix}${hyphenated ? replacement.replaceAll('.', '-') : replacement}`;
+    });
+  }
   return { body, count };
+}
+
+// A failed store may be bypassed only for text with no real address. Use the
+// same JSON decoding and address patterns as obfuscation, without state access.
+export function containsSensitiveIpv4(text) {
+  return transformJsonText(text, (value) => replaceAddresses(value, (ip) => (
+    isDocumentationAddress(ip) ? ip : '[redacted-ipv4]'
+  ))).count > 0;
 }
 
 export class MappingStore {

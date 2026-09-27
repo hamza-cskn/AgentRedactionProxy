@@ -1,5 +1,6 @@
 import http from 'node:http';
 
+import { containsSensitiveIpv4 } from './mapping-store.mjs';
 import { redactSecrets } from './secret-redaction.mjs';
 import { deobfuscateSse, protocolForPath, stripV1Prefix } from './sse-transform.mjs';
 
@@ -118,7 +119,13 @@ export function createProxy({
     }
     const protocol = protocolForPath(local.pathname);
     const inference = request.method === 'POST' && (protocol !== null || protectAllPostBodies);
-    const logPathname = redactSecrets(redactIpv4ForLogging(local.pathname)).body;
+    let logPathname = '[redacted-endpoint]';
+    try {
+      logPathname = redactSecrets(redactIpv4ForLogging(local.pathname)).body;
+    } catch {
+      // Strict credential checks may reject a path; never echo it or let a
+      // logging-only transformation escape the request handler.
+    }
     let outboundCount = 0;
     let inboundCount = 0;
     let secretCount = 0;
@@ -220,7 +227,7 @@ export function createProxy({
             });
             return;
           }
-          if (mode === 'never-see') {
+          if (mode === 'never-see' || containsSensitiveIpv4(requestBody.toString('utf8'))) {
             response.writeHead(502, { 'content-type': 'application/json' });
             response.end(JSON.stringify({ error: 'Outbound IPv4 redaction failed; request was not forwarded' }));
             logMetadata(logger, {
@@ -234,9 +241,7 @@ export function createProxy({
             });
             return;
           }
-          warning = secretCount > 0
-            ? 'outbound-ipv4-redaction-failed-secret-redacted-request-forwarded'
-            : 'outbound-redaction-failed-raw-request-forwarded';
+          warning = 'outbound-ipv4-state-unavailable-no-ipv4-request-forwarded';
           logger(JSON.stringify({
             timestamp: new Date().toISOString(),
             level: 'warning',
