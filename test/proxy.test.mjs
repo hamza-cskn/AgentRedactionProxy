@@ -248,6 +248,63 @@ test('non-paranoic IPv4 failure does not forward the original secret', async (co
   assert.equal(captured, '[REDACTED_API_KEY]');
 });
 
+test('keeps MongoDB metadata and obfuscates every host IP while hiding the password', async (context) => {
+  const captured = [];
+  const upstream = http.createServer(async (request, response) => {
+    captured.push(await readRequest(request));
+    response.end('{}');
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createProxy({
+    mode: 'never-see',
+    store: await createStore(),
+    upstreamBase: `${upstreamOrigin}/v1`,
+    protectAllPostBodies: true,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${proxyOrigin}/v1/messages`, {
+    method: 'POST',
+    body: 'mongodb://app_user:S3cr3t_99@10.20.30.40:27017,10.20.30.41:27017/analytics_db?replicaSet=rs0&ssl=true',
+  });
+  assert.equal(response.status, 200);
+  assert.equal(captured[0], 'mongodb://app_user:REDACTED_PASSWORD@192.0.2.1:27017,192.0.2.2:27017/analytics_db?replicaSet=rs0&ssl=true');
+
+  const spaced = await fetch(`${proxyOrigin}/v1/messages`, {
+    method: 'POST',
+    body: 'mongdb : / / app_user : hunter2 @ 10.20.30.41:27017,10.20.30.40:27017/analytics_db',
+  });
+  assert.equal(spaced.status, 200);
+  assert.equal(captured[1], 'mongdb : / / app_user : REDACTED_PASSWORD @ 192.0.2.2:27017,192.0.2.1:27017/analytics_db');
+});
+
+test('never-see blocks malformed credential URLs that cannot be safely redacted', async (context) => {
+  let upstreamCalls = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamCalls += 1;
+    response.end('{}');
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createProxy({
+    mode: 'never-see',
+    store: await createStore(),
+    upstreamBase: `${upstreamOrigin}/v1`,
+    protectAllPostBodies: true,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${proxyOrigin}/v1/messages`, {
+    method: 'POST',
+    body: 'mongdb://user:pass word@host',
+  });
+  assert.equal(response.status, 502);
+  assert.equal(upstreamCalls, 0);
+});
+
 test('unreadable outbound text fails closed even in non-paranoic mode', async (context) => {
   let upstreamCalls = 0;
   const upstream = http.createServer((_request, response) => {

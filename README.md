@@ -119,15 +119,22 @@ proxy processes are stopped. There is no automatic reset or stale-lock removal.
 
 Outbound POST bodies are scanned for selected provider-token formats (including
 OpenAI, Anthropic, GitHub, GitLab, Slack, Stripe, Google, npm, PyPI, and
-SendGrid), PEM private-key blocks, JWTs, and database URLs containing a password.
-Recognized values become type-labeled redaction markers. JSON strings and JSON
-encoded inside tool arguments are decoded before scanning. Credentials are
+SendGrid), PEM private-key blocks, JWTs, URL userinfo passwords, and
+password-like query values inside text. Tokens, keys, and JWTs become
+type-labeled markers. URLs keep their original structure and username, but
+password values become `REDACTED_PASSWORD`; host IPv4 values are still mapped
+consistently. This works across URL schemes, including misspelled ones, and
+allows spaces around the `:`, `/`, and `@` separators. Ambiguous or overlong
+URL userinfo is blocked rather than forwarded. JSON strings and JSON encoded
+inside tool arguments are decoded before scanning. Recognized credentials are
 never written to the IPv4 mapping file or restored into model responses; a
 tool that needs an exact redacted credential must obtain it locally instead.
 
-Pattern matching cannot identify every secret. Provider formats can change;
-arbitrary passwords, UUIDs, timestamps, and long random-looking strings are
-not masked. Passwordless database URLs are left alone. The patterns were
+Pattern matching cannot identify every secret or malformed URL. Provider
+formats can change; arbitrary passwords, UUIDs, timestamps, and long
+random-looking strings are not masked. Usernames, hostnames, database names,
+and non-password query values in URLs remain visible to the model. Passwordless
+database URLs are left alone apart from IPv4 host masking. The patterns were
 adapted from [this log-template miner](https://gist.github.com/hamza-cskn/1b5404299afa2e7bd34cf2630cfc9a81),
 but its broad log-deduplication masks were not carried over.
 

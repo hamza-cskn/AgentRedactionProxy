@@ -23,7 +23,7 @@ test('redacts provider tokens, PEM private keys, JWTs, and credential-bearing da
   assert.match(result.body, /\[REDACTED_API_KEY\]/);
   assert.match(result.body, /\[REDACTED_PRIVATE_KEY\]/);
   assert.match(result.body, /\[REDACTED_JWT\]/);
-  assert.match(result.body, /\[REDACTED_DATABASE_URL\]/);
+  assert.match(result.body, /postgres:\/\/alice:REDACTED_PASSWORD@db\.example\/app/);
 });
 
 test('redacts secrets inside nested JSON strings without touching non-secret identifiers', () => {
@@ -44,14 +44,26 @@ test('redacts secrets inside nested JSON strings without touching non-secret ide
   assert.equal(JSON.parse(result.body).longValue, 'x'.repeat(48));
 });
 
-test('redacts Redis passwords and JDBC password parameters but leaves passwordless URLs', () => {
+test('redacts URL passwords across schemes while preserving connection structure', () => {
   const input = [
     'rediss://:hunter2@cache.example/0',
     'jdbc:postgresql://db.example/app?user=alice&password=hunter2',
+    'mongdb : / / app_user : hunter2 @ 10.20.30.40:27017/analytics_db?replicaSet=rs0',
     'postgres://db.example/app',
   ].join(' ');
   const result = redactSecrets(input);
-  assert.equal(result.count, 2);
+  assert.equal(result.count, 3);
   assert.equal(result.body.includes('hunter2'), false);
+  assert.equal(result.body.includes('rediss://:REDACTED_PASSWORD@cache.example/0'), true);
+  assert.equal(result.body.includes('jdbc:postgresql://db.example/app?user=alice&password=REDACTED_PASSWORD'), true);
+  assert.equal(result.body.includes('mongdb : / / app_user : REDACTED_PASSWORD @ 10.20.30.40:27017/analytics_db?replicaSet=rs0'), true);
   assert.equal(result.body.includes('postgres://db.example/app'), true);
+});
+
+test('rejects ambiguous credential-shaped URLs rather than forwarding a possible password', () => {
+  assert.throws(() => redactSecrets('mongdb://user:pass word@host'), /Unsafe credential URL/);
+  assert.throws(() => redactSecrets(`mongdb://user:${'x'.repeat(600)}@host`), /Unsafe credential URL/);
+  assert.equal(redactSecrets('https://example.com:8443/path').body, 'https://example.com:8443/path');
+  const prose = `See https://example.com ${'word '.repeat(200)}`;
+  assert.equal(redactSecrets(prose).body, prose);
 });
