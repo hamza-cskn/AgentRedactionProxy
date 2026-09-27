@@ -88,6 +88,7 @@ export function createProxy({
   mode,
   store,
   upstreamBase = UPSTREAM_BASE,
+  protectAllPostBodies = false,
   maxBodyBytes = DEFAULT_MAX_BODY_BYTES,
   upstreamTimeoutMs = 10 * 60 * 1000,
   maxConcurrentRequests = 8,
@@ -115,7 +116,7 @@ export function createProxy({
       return;
     }
     const protocol = protocolForPath(local.pathname);
-    const inference = request.method === 'POST' && protocol !== null;
+    const inference = request.method === 'POST' && (protocol !== null || protectAllPostBodies);
     const logPathname = redactIpv4ForLogging(local.pathname);
     let outboundCount = 0;
     let inboundCount = 0;
@@ -272,7 +273,7 @@ export function createProxy({
           const text = new TextDecoder('utf-8', { fatal: true }).decode(responseBody);
           const isSse = upstreamResponse.headers.get('content-type')
             ?.toLowerCase()
-            .includes('text/event-stream');
+            .includes('text/event-stream') || /(?:^|\n)(?:event|data):/.test(text);
           const transformed = isSse
             ? await deobfuscateSse(text, protocol, store)
             : await store.deobfuscate(text);

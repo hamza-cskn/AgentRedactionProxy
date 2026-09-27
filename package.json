@@ -10,6 +10,6 @@
     "start": "node src/main.mjs",
     "status": "node src/main.mjs status",
     "test": "node --test",
-    "test:opencode": "IPV4_PROXY_OPENCODE_TEST=1 node --test test/opencode.test.mjs"
+    "test:opencode": "IPV4_PROXY_OPENCODE_TEST=1 node --test test/opencode.test.mjs test/openai-opencode.test.mjs"
   }
 }

@@ -89,6 +89,105 @@ test('redacts inference requests and deobfuscates buffered SSE responses', async
   assert.equal(logs.some((line) => line.includes('"inboundReplacements":1')), true);
 });
 
+test('restores fragmented SSE when the upstream omits Content-Type', async (context) => {
+  const upstream = http.createServer(async (request, response) => {
+    await readRequest(request);
+    response.end([
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"192"}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":".0.2.1"}\n\n',
+    ].join(''));
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createProxy({
+    mode: 'never-see',
+    store: await createStore(),
+    upstreamBase: `${upstreamOrigin}/backend-api/codex`,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${proxyOrigin}/v1/responses`, {
+    method: 'POST',
+    body: '{"input":"10.123.45.67"}',
+  });
+  const events = (await response.text()).split(/\r?\n\r?\n/).filter(Boolean)
+    .map((block) => JSON.parse(block.split(/\r?\n/).find((line) => line.startsWith('data:')).slice(5)));
+  assert.equal(events.map((event) => event.delta).join(''), '10.123.45.67');
+});
+
+test('Claude Code Messages route keeps OAuth headers and restores SSE text', async (context) => {
+  let captured;
+  const upstream = http.createServer(async (request, response) => {
+    captured = {
+      path: request.url,
+      authorization: request.headers.authorization,
+      body: await readRequest(request),
+    };
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.end([
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"192.0"}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":".2.1"}}\n\n',
+    ].join(''));
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createProxy({
+    mode: 'never-see',
+    store: await createStore(),
+    upstreamBase: `${upstreamOrigin}/v1`,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+
+  const response = await fetch(`${proxyOrigin}/v1/messages`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer claude-test', 'content-type': 'application/json' },
+    body: '{"messages":[{"role":"user","content":"10.123.45.67"}]}',
+  });
+  const body = await response.text();
+  assert.equal(response.status, 200);
+  assert.equal(captured.path, '/v1/messages');
+  assert.equal(captured.authorization, 'Bearer claude-test');
+  assert.equal(captured.body.includes('10.123.45.67'), false);
+  assert.equal(captured.body.includes('192.0.2.1'), true);
+  const text = body.split(/\r?\n\r?\n/).filter(Boolean)
+    .map((block) => JSON.parse(block.split(/\r?\n/).find((line) => line.startsWith('data:')).slice(5)).delta.text)
+    .join('');
+  assert.equal(text, '10.123.45.67');
+});
+
+test('Claude Code auxiliary POST bodies are redacted before forwarding', async (context) => {
+  let captured;
+  const upstream = http.createServer(async (request, response) => {
+    captured = { path: request.url, body: await readRequest(request) };
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end('{"input_tokens":5}');
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createProxy({
+    mode: 'never-see',
+    store: await createStore(),
+    upstreamBase: `${upstreamOrigin}/v1`,
+    protectAllPostBodies: true,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+
+  const response = await fetch(`${proxyOrigin}/v1/messages/count_tokens`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{"messages":[{"role":"user","content":"10.123.45.67"}]}',
+  });
+  assert.equal(response.status, 200);
+  assert.equal(captured.path, '/v1/messages/count_tokens');
+  assert.equal(captured.body.includes('10.123.45.67'), false);
+  assert.equal(captured.body.includes('192.0.2.1'), true);
+});
+
 test('recognizes every OpenCode Zen inference endpoint', async (context) => {
   const captured = [];
   const upstream = http.createServer(async (request, response) => {
