@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -186,6 +186,91 @@ test('Claude Code auxiliary POST bodies are redacted before forwarding', async (
   assert.equal(captured.path, '/v1/messages/count_tokens');
   assert.equal(captured.body.includes('10.123.45.67'), false);
   assert.equal(captured.body.includes('192.0.2.1'), true);
+});
+
+test('redacts API keys from outbound bodies without persisting or restoring them', async (context) => {
+  const token = `sk-${'e'.repeat(24)}`;
+  let captured;
+  const upstream = http.createServer(async (request, response) => {
+    captured = { authorization: request.headers.authorization, body: await readRequest(request) };
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ text: '[REDACTED_API_KEY] 192.0.2.1' }));
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const store = await createStore();
+  const logs = [];
+  const proxy = createProxy({
+    mode: 'never-see',
+    store,
+    upstreamBase: `${upstreamOrigin}/v1`,
+    protectAllPostBodies: true,
+    logger: (line) => logs.push(line),
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+
+  const response = await fetch(`${proxyOrigin}/v1/messages`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer client-login', 'content-type': 'application/json' },
+    body: JSON.stringify({ input: `10.123.45.67 ${token}` }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(captured.authorization, 'Bearer client-login');
+  assert.equal(captured.body.includes(token), false);
+  assert.equal(captured.body.includes('10.123.45.67'), false);
+  assert.equal(captured.body.includes('[REDACTED_API_KEY]'), true);
+  assert.equal((await response.text()).includes(token), false);
+  assert.equal((await readFile(store.statePath, 'utf8')).includes(token), false);
+  assert.equal(logs.some((line) => line.includes(token)), false);
+  assert.equal(logs.some((line) => line.includes('"secretRedactions":1')), true);
+});
+
+test('non-paranoic IPv4 failure does not forward the original secret', async (context) => {
+  const token = `ghp_${'f'.repeat(24)}`;
+  let captured;
+  const upstream = http.createServer(async (request, response) => {
+    captured = await readRequest(request);
+    response.end('{}');
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createProxy({
+    mode: 'non-paranoic',
+    store: { obfuscate: async () => { throw new Error('test failure'); }, deobfuscate: async () => ({ body: '{}', count: 0 }) },
+    upstreamBase: `${upstreamOrigin}/v1`,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${proxyOrigin}/v1/messages`, { method: 'POST', body: token });
+  assert.equal(response.status, 200);
+  assert.equal(captured, '[REDACTED_API_KEY]');
+});
+
+test('unreadable outbound text fails closed even in non-paranoic mode', async (context) => {
+  let upstreamCalls = 0;
+  const upstream = http.createServer((_request, response) => {
+    upstreamCalls += 1;
+    response.end('{}');
+  });
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const proxy = createProxy({
+    mode: 'non-paranoic',
+    store: await createStore(),
+    upstreamBase: `${upstreamOrigin}/v1`,
+    protectAllPostBodies: true,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${proxyOrigin}/v1/messages`, {
+    method: 'POST',
+    body: Buffer.from([0xff]),
+  });
+  assert.equal(response.status, 502);
+  assert.equal(upstreamCalls, 0);
 });
 
 test('recognizes every OpenCode Zen inference endpoint', async (context) => {

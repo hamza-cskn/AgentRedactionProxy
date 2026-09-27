@@ -1,9 +1,10 @@
 # Agent Redaction Proxy
 
-A local reverse proxy that consistently replaces IPv4 addresses in plain text
-before model requests leave the machine, then restores those addresses in
-buffered model responses. It serves OpenCode's OpenAI login and Claude Code's
-Claude login on separate local ports, with one shared mapping store.
+A local reverse proxy that replaces plain-text IPv4 addresses before model
+requests leave the machine, then restores them in buffered model responses.
+It also redacts recognizable credentials without restoring or storing them.
+It serves OpenCode's OpenAI login and Claude Code's Claude login on separate
+local ports, with one shared IPv4 mapping store.
 
 ## Start
 
@@ -60,7 +61,7 @@ Set `mode` in `config.json`, then restart the proxy.
 ### `never-see`
 
 - The proxy persists new mappings before forwarding a model request.
-- If outbound IPv4 processing fails, the proxy returns `502` and does not call
+- If outbound IPv4 or credential processing fails, the proxy returns `502` and does not call
   the upstream model service.
 - If inbound deobfuscation fails, the already-safe response is returned with
   fake IPv4 addresses and an `x-ipv4-proxy-warning` header.
@@ -70,7 +71,9 @@ Set `mode` in `config.json`, then restart the proxy.
 ### `non-paranoic`
 
 - Requests and responses are normally transformed in the same way.
-- If outbound processing fails, the raw request is forwarded upstream.
+- If IPv4 processing fails, the request is forwarded with raw IPv4 values but
+  with any recognized credentials still redacted. If credential processing
+  fails, the request is blocked in both modes.
 - Fail-open requests produce a body-free warning on stderr and add an
   `x-ipv4-proxy-warning` response header.
 
@@ -112,6 +115,22 @@ then restore them to the wrong real addresses. Start new OpenCode sessions after
 a reset. To recover old sessions, restore their original mapping file while all
 proxy processes are stopped. There is no automatic reset or stale-lock removal.
 
+## Credential Redaction
+
+Outbound POST bodies are scanned for selected provider-token formats (including
+OpenAI, Anthropic, GitHub, GitLab, Slack, Stripe, Google, npm, PyPI, and
+SendGrid), PEM private-key blocks, JWTs, and database URLs containing a password.
+Recognized values become type-labeled redaction markers. JSON strings and JSON
+encoded inside tool arguments are decoded before scanning. Credentials are
+never written to the IPv4 mapping file or restored into model responses; a
+tool that needs an exact redacted credential must obtain it locally instead.
+
+Pattern matching cannot identify every secret. Provider formats can change;
+arbitrary passwords, UUIDs, timestamps, and long random-looking strings are
+not masked. Passwordless database URLs are left alone. The patterns were
+adapted from [this log-template miner](https://gist.github.com/hamza-cskn/1b5404299afa2e7bd34cf2630cfc9a81),
+but its broad log-deduplication masks were not carried over.
+
 ## Protocol Support
 
 Port `8787` forwards to `https://chatgpt.com/backend-api/codex` for OpenCode's
@@ -124,7 +143,7 @@ local compatibility tests, but neither production listener is configured as
 a general gateway for those providers.
 
 The same routes without the `/v1` prefix are supported, including SSE responses.
-JSON strings are decoded before IPv4 replacement, including JSON encoded inside
+JSON strings are decoded before replacement, including JSON encoded inside
 tool-argument strings. Unchanged strings, numeric literals, and JSON whitespace
 are preserved. Plain text uses the same address matcher directly.
 
@@ -152,8 +171,10 @@ fixed process-memory ceiling: parsing and SSE transformation create extra copies
 
 ## Security Boundary
 
-The `never-see` guarantee covers dotted-decimal IPv4 addresses in plain-text
-content of POST bodies sent through either configured listener.
+The `never-see` guarantee covers dotted-decimal IPv4 addresses and the
+recognized credential patterns above in plain-text content of POST bodies
+sent through either configured listener. It does not guarantee detection of
+every credential or other form of sensitive information.
 This includes decoded JSON strings and JSON encoded inside tool-argument
 strings. It does not inspect or decode base64 payloads, images, or binary
 attachments; those contents are outside the guarantee and are not rejected
@@ -177,8 +198,9 @@ IPv4 values. If a model independently emits an RFC 5737 address that exactly
 matches an existing fake mapping, the proxy also restores it; this ambiguity is
 accepted by the current design.
 
-Mapping state is plaintext and contains real IPv4 addresses. Normal request
-logs contain only timestamp, mode, endpoint, status, replacement counts, and
+Mapping state is plaintext and contains real IPv4 addresses, but no recognized
+credentials. Normal request logs contain only timestamp, mode, endpoint,
+status, replacement counts, and
 duration. Request and response bodies and concrete IPv4 values are not logged.
 
 ## Test

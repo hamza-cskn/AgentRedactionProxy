@@ -1,5 +1,6 @@
 import http from 'node:http';
 
+import { redactSecrets } from './secret-redaction.mjs';
 import { deobfuscateSse, protocolForPath, stripV1Prefix } from './sse-transform.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -117,9 +118,10 @@ export function createProxy({
     }
     const protocol = protocolForPath(local.pathname);
     const inference = request.method === 'POST' && (protocol !== null || protectAllPostBodies);
-    const logPathname = redactIpv4ForLogging(local.pathname);
+    const logPathname = redactSecrets(redactIpv4ForLogging(local.pathname)).body;
     let outboundCount = 0;
     let inboundCount = 0;
+    let secretCount = 0;
     let warning = null;
     let timeout;
     let timedOut = false;
@@ -156,7 +158,35 @@ export function createProxy({
       if (inference && requestBody.length > 0) {
         try {
           const text = new TextDecoder('utf-8', { fatal: true }).decode(requestBody);
-          const transformed = await store.obfuscate(text, { maxBytes: maxBodyBytes });
+          const redacted = redactSecrets(text);
+          requestBody = Buffer.from(redacted.body, 'utf8');
+          secretCount = redacted.count;
+        } catch {
+          response.writeHead(502, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'Outbound secret redaction failed; request was not forwarded' }));
+          logMetadata(logger, {
+            mode,
+            endpoint: logPathname,
+            status: 502,
+            warning: 'outbound-secret-redaction-failed',
+            durationMs: Date.now() - startedAt,
+          });
+          return;
+        }
+        if (requestBody.length > maxBodyBytes) {
+          response.writeHead(413, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'Transformed request body exceeds 64 MiB limit' }));
+          logMetadata(logger, {
+            mode,
+            endpoint: logPathname,
+            status: 413,
+            warning: 'transformed-request-too-large',
+            durationMs: Date.now() - startedAt,
+          });
+          return;
+        }
+        try {
+          const transformed = await store.obfuscate(requestBody.toString('utf8'), { maxBytes: maxBodyBytes });
           requestBody = Buffer.from(transformed.body, 'utf8');
           outboundCount = transformed.count;
         } catch (error) {
@@ -204,7 +234,9 @@ export function createProxy({
             });
             return;
           }
-          warning = 'outbound-redaction-failed-raw-request-forwarded';
+          warning = secretCount > 0
+            ? 'outbound-ipv4-redaction-failed-secret-redacted-request-forwarded'
+            : 'outbound-redaction-failed-raw-request-forwarded';
           logger(JSON.stringify({
             timestamp: new Date().toISOString(),
             level: 'warning',
@@ -317,6 +349,7 @@ export function createProxy({
         endpoint: logPathname,
         status: upstreamResponse.status,
         outboundReplacements: outboundCount,
+        secretRedactions: secretCount,
         inboundReplacements: inboundCount,
         ...(warning ? { warning } : {}),
         durationMs: Date.now() - startedAt,
