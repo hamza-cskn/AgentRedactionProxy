@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import { MappingStore } from '../src/mapping-store.mjs';
+import { legacyStore } from './helpers/mapping-fixtures.mjs';
 import { createProxy } from '../src/proxy.mjs';
 
 test('OpenCode restores tool arguments and redacts the subsequent tool result', {
@@ -30,7 +30,7 @@ test('OpenCode restores tool arguments and redacts the subsequent tool result', 
   context.after(() => new Promise((resolve) => upstream.close(resolve)));
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await MappingStore.open(path.join(directory, 'mappings.json')),
+    store: await legacyStore(path.join(directory, 'mappings.json'), ['10.123.45.67']),
     upstreamBase: `http://127.0.0.1:${upstream.address().port}/v1`,
     logger: () => {},
   });
@@ -87,10 +87,10 @@ test('OpenCode restores tool arguments and redacts the subsequent tool result', 
   for (const request of captured) {
     assert.equal(request.path, '/v1/chat/completions');
     assert.equal(JSON.stringify(request.body).includes('10.123.45.67'), false);
-    assert.ok(JSON.stringify(request.body).includes('192.0.2.1'));
+    assert.match(JSON.stringify(request.body), /\[REDACTED_IP_[a-f0-9]{32}\]/);
   }
   const toolResult = captured[1].body.messages.find((message) => message.role === 'tool');
-  assert.ok(JSON.stringify(toolResult).includes('192.0.2.1'));
+  assert.match(JSON.stringify(toolResult), /\[REDACTED_IP_[a-f0-9]{32}\]/);
   const events = stdout.trim().split('\n').map((line) => JSON.parse(line));
   const toolEvent = events.find((event) => event.type === 'tool_use');
   assert.equal(toolEvent.part.state.status, 'completed');

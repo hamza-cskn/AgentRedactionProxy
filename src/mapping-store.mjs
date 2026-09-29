@@ -18,7 +18,9 @@ const POOL_PREFIXES = [
 const OCTET = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
 const IPV4_PATTERN = new RegExp(`(^|[^0-9.]|(?<![0-9])\\.)(${OCTET}(?:\\.${OCTET}){3})(?!\\.?[0-9])`, 'g');
 const AWS_IPV4_PATTERN = new RegExp(`\\b(ip-)(${OCTET}(?:-${OCTET}){3})(?=\\.(?:ec2|[a-z0-9-]+\\.compute)\\.internal\\b)`, 'gi');
-const STATE_VERSION = 1;
+const STATE_VERSION = 2;
+const IP_MARKER = /\[REDACTED_IP_[a-f0-9]{32}\]/g;
+const EXACT_IP_MARKER = /^\[REDACTED_IP_[a-f0-9]{32}\]$/;
 const POOL_SIZE = POOL_PREFIXES.length * 254;
 const LOCK_WAIT_MS = 5_000;
 
@@ -57,7 +59,7 @@ function emptyState() {
 function validateState(state) {
   if (
     !state
-    || state.version !== STATE_VERSION
+    || ![1, STATE_VERSION].includes(state.version)
     || !Number.isInteger(state.nextIndex)
     || state.nextIndex < 0
     || state.nextIndex > POOL_SIZE
@@ -78,6 +80,7 @@ function validateState(state) {
       || isDocumentationAddress(mapping.real)
       || realValues.has(mapping.real)
       || fakeValues.has(mapping.fake)
+      || (state.version === 1 && mapping.legacyFake !== undefined)
     ) {
       throw new Error('Invalid mapping state');
     }
@@ -89,10 +92,17 @@ function validateState(state) {
     throw new Error('Invalid mapping state');
   }
   for (let index = 0; index < state.mappings.length; index += 1) {
-    if (state.mappings[index].fake !== fakeAddressAt(index)) {
+    const mapping = state.mappings[index];
+    if (state.version === 1 ? mapping.fake !== fakeAddressAt(index)
+      : !EXACT_IP_MARKER.test(mapping.fake)
+        || (mapping.legacyFake !== undefined && mapping.legacyFake !== fakeAddressAt(index))) {
       throw new Error('Invalid mapping state');
     }
   }
+}
+
+function newMarker() {
+  return `[REDACTED_IP_${randomUUID().replaceAll('-', '')}]`;
 }
 
 function collectExactIpv4(value) {
@@ -243,6 +253,9 @@ export class MappingStore {
     this.state = state;
     this.realToFake = new Map(state.mappings.map((mapping) => [mapping.real, mapping.fake]));
     this.fakeToReal = new Map(state.mappings.map((mapping) => [mapping.fake, mapping.real]));
+    for (const mapping of state.mappings) {
+      if (mapping.legacyFake) this.fakeToReal.set(mapping.legacyFake, mapping.real);
+    }
   }
 
   obfuscate(text, options = {}) {
@@ -262,6 +275,13 @@ export class MappingStore {
   }
 
   async #obfuscateLocked(text, maxBytes) {
+    const originalState = this.state;
+    const migrating = this.state.version === 1;
+    if (migrating) {
+      this.#applyState({ ...this.state, version: STATE_VERSION, mappings: this.state.mappings.map((mapping) => ({
+        real: mapping.real, fake: newMarker(), legacyFake: mapping.fake,
+      })) });
+    }
     const originalLength = this.state.mappings.length;
     const originalNextIndex = this.state.nextIndex;
     const newMappings = [];
@@ -270,8 +290,9 @@ export class MappingStore {
       const transformed = transformJsonText(text, (value) => replaceAddresses(value, (ip) => {
         if (isDocumentationAddress(ip)) return ip;
         if (this.realToFake.has(ip)) return this.realToFake.get(ip);
-        const fake = fakeAddressAt(this.state.nextIndex);
-        if (fake === null) throw new MappingCapacityError();
+        if (this.state.nextIndex >= POOL_SIZE) throw new MappingCapacityError();
+        let fake;
+        do { fake = newMarker(); } while (this.fakeToReal.has(fake));
         const mapping = { real: ip, fake };
         this.state.mappings.push(mapping);
         this.state.nextIndex += 1;
@@ -284,7 +305,7 @@ export class MappingStore {
       if (Buffer.byteLength(transformed.body, 'utf8') > maxBytes) {
         throw new TransformedBodyLimitError();
       }
-      if (newMappings.length > 0) await saveState(this.statePath, this.state);
+      if (migrating || newMappings.length > 0) await saveState(this.statePath, this.state);
       // Also retry durability for existing mappings after a previous sync failure.
       await syncStateDirectory(this.statePath);
       return transformed;
@@ -297,6 +318,7 @@ export class MappingStore {
         this.realToFake.delete(mapping.real);
         this.fakeToReal.delete(mapping.fake);
       }
+      if (migrating) this.#applyState(originalState);
       throw error;
     }
   }
@@ -310,9 +332,19 @@ export class MappingStore {
       const release = await acquireLock(this.lockPath);
       try {
         this.#applyState(await readState(this.statePath));
-        return texts.map((text) => transformJsonText(text, (value) => (
-          replaceAddresses(value, (ip) => this.fakeToReal.get(ip))
-        )));
+        return texts.map((text) => transformJsonText(text, (value) => {
+          const legacy = replaceAddresses(value, (ip) => this.fakeToReal.get(ip));
+          let count = legacy.count;
+          const body = legacy.body.replace(IP_MARKER, (marker, offset, input) => {
+            const real = this.fakeToReal.get(marker);
+            if (!real) return marker;
+            count += 1;
+            const aws = /\bip-$/i.test(input.slice(0, offset))
+              && /^\.(?:ec2|[a-z0-9-]+\.compute)\.internal\b/i.test(input.slice(offset + marker.length));
+            return aws ? real.replaceAll('.', '-') : real;
+          });
+          return { body, count };
+        }));
       } finally {
         await release();
       }

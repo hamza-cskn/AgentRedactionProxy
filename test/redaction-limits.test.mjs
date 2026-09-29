@@ -78,7 +78,8 @@ test('default limits reject extreme candidates without decoding arbitrary blobs'
 });
 
 test('JWT/JWE and malformed-header candidates are bounded before validation', () => {
-  assert.throws(() => redactSecrets(`${'A'.repeat(88)}.e30.signature`, { maxJwtHeaderBytes: 64 }), /configured limit/);
+  const malformedHeader = Buffer.from(`{${'A'.repeat(64)}`).toString('base64url');
+  assert.throws(() => redactSecrets(`${malformedHeader}.e30.signature`, { maxJwtHeaderBytes: 64 }), /configured limit/);
   const jwe = `${header}.key.iv.${'A'.repeat(80)}.tag`;
   assert.throws(() => redactSecrets(jwe, { maxJwtChars: jwe.length - 1 }), /configured limit/);
   assert.equal(redactSecrets(jwe, { maxJwtChars: jwe.length }).body, '[REDACTED_JWT]');
@@ -86,6 +87,21 @@ test('JWT/JWE and malformed-header candidates are bounded before validation', ()
   const jwt = `${unicodeHeader.toString('base64url')}.e30.signature`;
   assert.throws(() => redactSecrets(jwt, { maxJwtHeaderBytes: unicodeHeader.length - 1 }), /configured limit/);
   assert.equal(redactSecrets(jwt, { maxJwtHeaderBytes: unicodeHeader.length }).body, '[REDACTED_JWT]');
+});
+
+test('long dotted code paths are not JWT candidates without a JSON-object header', () => {
+  const input = `root.${Array(4000).fill('field').join('.')}`;
+  assert.deepEqual(redactSecrets(input), { body: input, count: 0 });
+  assert.deepEqual(redactSecrets(JSON.stringify({ input })), { body: JSON.stringify({ input }), count: 0 });
+});
+
+test('leading JSON whitespace cannot bypass JWT header limits', () => {
+  for (const spaces of [0, 1, 64, 4096]) {
+    const bytes = Buffer.from(`${' '.repeat(spaces)}{"alg":"HS256"}`);
+    const jwt = `${bytes.toString('base64url')}.e30.signature`;
+    assert.throws(() => redactSecrets(jwt, { maxJwtHeaderBytes: bytes.length - 1 }), /configured limit/);
+    assert.equal(redactSecrets(jwt, { maxJwtHeaderBytes: bytes.length }).body, '[REDACTED_JWT]');
+  }
 });
 
 test('config merges partial overrides and rejects invalid limit settings', async (context) => {

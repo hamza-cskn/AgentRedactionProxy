@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { mappedText, legacyStore } from './helpers/mapping-fixtures.mjs';
 import http from 'node:http';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -31,9 +32,10 @@ async function readRequest(request) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function createStore() {
+async function createStore(legacyAddresses) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'opencode-ipv4-proxy-'));
-  return MappingStore.open(path.join(directory, 'mappings.json'));
+  const file = path.join(directory, 'mappings.json');
+  return legacyAddresses ? legacyStore(file, legacyAddresses) : MappingStore.open(file);
 }
 
 test('redacts inference requests and deobfuscates buffered SSE responses', async (context) => {
@@ -54,9 +56,10 @@ test('redacts inference requests and deobfuscates buffered SSE responses', async
   context.after(() => close(upstream));
 
   const logs = [];
+  const store = await createStore(['192.168.24.21']);
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: (line) => logs.push(line),
   });
@@ -76,7 +79,7 @@ test('redacts inference requests and deobfuscates buffered SSE responses', async
   assert.equal(response.status, 200);
   assert.equal(capturedAuthorization, 'Bearer test-key');
   assert.equal(capturedBody.includes('192.168.24.21'), false);
-  assert.equal(capturedBody.includes('192.0.2.1'), true);
+  assert.equal(capturedBody.includes(store.state.mappings[0].fake), true);
   const outputText = body
     .split(/\r?\n\r?\n/)
     .filter((block) => block.startsWith('data: {'))
@@ -99,9 +102,10 @@ test('restores fragmented SSE when the upstream omits Content-Type', async (cont
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
+  const store = await createStore(['10.123.45.67']);
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/backend-api/codex`,
     logger: () => {},
   });
@@ -132,9 +136,10 @@ test('Claude Code Messages route keeps OAuth headers and restores SSE text', asy
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
+  const store = await createStore(['10.123.45.67']);
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/v1`,
     logger: () => {},
   });
@@ -151,7 +156,7 @@ test('Claude Code Messages route keeps OAuth headers and restores SSE text', asy
   assert.equal(captured.path, '/v1/messages');
   assert.equal(captured.authorization, 'Bearer claude-test');
   assert.equal(captured.body.includes('10.123.45.67'), false);
-  assert.equal(captured.body.includes('192.0.2.1'), true);
+  assert.equal(captured.body.includes(store.state.mappings[0].fake), true);
   const text = body.split(/\r?\n\r?\n/).filter(Boolean)
     .map((block) => JSON.parse(block.split(/\r?\n/).find((line) => line.startsWith('data:')).slice(5)).delta.text)
     .join('');
@@ -167,9 +172,10 @@ test('Claude Code auxiliary POST bodies are redacted before forwarding', async (
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/v1`,
     protectAllPostBodies: true,
     logger: () => {},
@@ -185,7 +191,7 @@ test('Claude Code auxiliary POST bodies are redacted before forwarding', async (
   assert.equal(response.status, 200);
   assert.equal(captured.path, '/v1/messages/count_tokens');
   assert.equal(captured.body.includes('10.123.45.67'), false);
-  assert.equal(captured.body.includes('192.0.2.1'), true);
+  assert.equal(captured.body.includes(store.state.mappings[0].fake), true);
 });
 
 test('redacts API keys from outbound bodies without persisting or restoring them', async (context) => {
@@ -194,7 +200,7 @@ test('redacts API keys from outbound bodies without persisting or restoring them
   const upstream = http.createServer(async (request, response) => {
     captured = { authorization: request.headers.authorization, body: await readRequest(request) };
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ text: '[REDACTED_API_KEY] 192.0.2.1' }));
+    response.end(JSON.stringify({ text: mappedText(store, '[REDACTED_API_KEY] 192.0.2.1') }));
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
@@ -256,9 +262,10 @@ test('keeps MongoDB metadata and obfuscates every host IP while hiding the passw
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/v1`,
     protectAllPostBodies: true,
     logger: () => {},
@@ -270,14 +277,14 @@ test('keeps MongoDB metadata and obfuscates every host IP while hiding the passw
     body: 'mongodb://app_user:S3cr3t_99@10.20.30.40:27017,10.20.30.41:27017/analytics_db?replicaSet=rs0&ssl=true',
   });
   assert.equal(response.status, 200);
-  assert.equal(captured[0], 'mongodb://app_user:REDACTED_PASSWORD@192.0.2.1:27017,192.0.2.2:27017/analytics_db?replicaSet=rs0&ssl=true');
+  assert.equal(captured[0], mappedText(store, 'mongodb://app_user:REDACTED_PASSWORD@192.0.2.1:27017,192.0.2.2:27017/analytics_db?replicaSet=rs0&ssl=true'));
 
   const spaced = await fetch(`${proxyOrigin}/v1/messages`, {
     method: 'POST',
     body: 'mongdb : / / app_user : hunter2 @ 10.20.30.41:27017,10.20.30.40:27017/analytics_db',
   });
   assert.equal(spaced.status, 200);
-  assert.equal(captured[1], 'mongdb : / / app_user : REDACTED_PASSWORD @ 192.0.2.2:27017,192.0.2.1:27017/analytics_db');
+  assert.equal(captured[1], mappedText(store, 'mongdb : / / app_user : REDACTED_PASSWORD @ 192.0.2.2:27017,192.0.2.1:27017/analytics_db'));
 });
 
 for (const mode of ['paranoic', 'default']) {
@@ -294,9 +301,10 @@ for (const mode of ['paranoic', 'default']) {
   ]) {
     test(`${mode} outbound text: ${name}`, async (context) => {
       const captured = [];
+      const store = await createStore();
       const proxy = createProxy({
         mode,
-        store: await createStore(),
+        store,
         protectAllPostBodies: true,
         logger: () => {},
         fetchImpl: async (_url, { body }) => {
@@ -310,9 +318,9 @@ for (const mode of ['paranoic', 'default']) {
         const response = await fetch(`${origin}${endpoint}`, { method: 'POST', body: input });
         assert.equal(await response.text(), '{}');
         assert.equal(response.status, 200);
-        assert.equal(captured.at(-1), expected);
+        assert.equal(captured.at(-1), mappedText(store, expected));
       }
-      assert.deepEqual(captured, [expected, expected, expected], 'both clients must reuse identical IP mappings');
+      assert.deepEqual(captured, Array(3).fill(mappedText(store, expected)), 'both clients must reuse identical IP mappings');
     });
   }
 }
@@ -330,9 +338,10 @@ for (const [name, input] of [
     });
     const upstreamOrigin = await listen(upstream);
     context.after(() => close(upstream));
+    const store = await createStore();
     const proxy = createProxy({
       mode: 'paranoic',
-      store: await createStore(),
+      store,
       upstreamBase: `${upstreamOrigin}/v1`,
       protectAllPostBodies: true,
       logger: () => {},
@@ -359,9 +368,10 @@ test('unreadable outbound text fails closed even in default mode', async (contex
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'default',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/v1`,
     protectAllPostBodies: true,
     logger: () => {},
@@ -381,14 +391,15 @@ test('recognizes every OpenCode Zen inference endpoint', async (context) => {
   const upstream = http.createServer(async (request, response) => {
     captured.push({ url: request.url, body: await readRequest(request) });
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end('{"text":"192.0.2.1"}');
+    response.end(mappedText(store, '{"text":"192.0.2.1"}'));
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
 
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
   });
@@ -413,7 +424,7 @@ test('recognizes every OpenCode Zen inference endpoint', async (context) => {
 
   assert.equal(captured.length, endpoints.length);
   for (const request of captured) {
-    assert.equal(request.body, '{"text":"192.0.2.1"}');
+    assert.equal(request.body, mappedText(store, '{"text":"192.0.2.1"}'));
   }
   assert.equal(captured[3].url, '/zen/v1/models/gemini-3-flash:streamGenerateContent?alt=sse');
   assert.equal(captured[4].url, '/zen/v1/models/gemini-3-flash:generateContent');
@@ -427,9 +438,10 @@ test('does not transform non-inference endpoints', async (context) => {
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
 
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
   });
@@ -637,9 +649,10 @@ test('returns malformed SSE unchanged with a warning', async (context) => {
 });
 
 test('enforces the configured request body limit', async (context) => {
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     maxBodyBytes: 8,
     logger: () => {},
   });
@@ -658,14 +671,15 @@ test('treats inference paths without the /v1 prefix as inference too', async (co
   const upstream = http.createServer(async (request, response) => {
     captured.push({ url: request.url, body: await readRequest(request) });
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end('{"text":"192.0.2.1"}');
+    response.end(mappedText(store, '{"text":"192.0.2.1"}'));
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
 
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
   });
@@ -684,7 +698,7 @@ test('treats inference paths without the /v1 prefix as inference too', async (co
 
   assert.equal(captured.length, endpoints.length);
   for (const request of captured) {
-    assert.equal(request.body, '{"text":"192.0.2.1"}');
+    assert.equal(request.body, mappedText(store, '{"text":"192.0.2.1"}'));
   }
   assert.equal(captured[3].url, '/zen/v1/models/gemini-3-flash:generateContent');
 });
@@ -700,9 +714,10 @@ test('blocks redirects from an inference endpoint instead of leaking the Locatio
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
 
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
   });
@@ -730,9 +745,10 @@ test('does not block redirects on non-inference endpoints', async (context) => {
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
 
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: () => {},
   });
@@ -753,9 +769,10 @@ test('redacts IPv4 addresses that appear in the logged endpoint path', async (co
   context.after(() => close(upstream));
 
   const logs = [];
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     upstreamBase: `${upstreamOrigin}/zen/v1`,
     logger: (line) => logs.push(line),
   });
@@ -770,9 +787,10 @@ test('redacts IPv4 addresses that appear in the logged endpoint path', async (co
 
 test('strict credential rejection in log metadata does not escape the request handler', async (context) => {
   const logs = [];
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     protectAllPostBodies: true,
     logger: (line) => logs.push(JSON.parse(line)),
     fetchImpl: async () => new Response('{}'),
@@ -840,9 +858,10 @@ test('contains malformed URLs without calling upstream', async () => {
 
 test('redacts escaped JSON before it reaches the upstream parser', async (context) => {
   let captured;
+  const store = await createStore();
   const proxy = createProxy({
     mode: 'paranoic',
-    store: await createStore(),
+    store,
     logger: () => {},
     fetchImpl: async (_url, { body }) => {
       captured = JSON.parse(body.toString());
@@ -857,7 +876,7 @@ test('redacts escaped JSON before it reaches the upstream parser', async (contex
   });
   await response.text();
   assert.equal(response.status, 200);
-  assert.equal(captured.input, '192.0.2.1');
+  assert.equal(captured.input, store.state.mappings[0].fake);
 });
 
 for (const phase of ['headers', 'body']) {
@@ -959,11 +978,13 @@ test('restores fragmented SSE for every protocol with either route prefix', asyn
     ['/models/gemini:streamGenerateContent', (text) => ({ candidates: [{ index: 0, content: { parts: [{ text }] } }] }), (event) => event.candidates[0].content.parts[0].text],
   ];
   let current;
+  const store = await createStore();
   const proxy = createProxy({
-    mode: 'paranoic', store: await createStore(), logger: () => {},
+    mode: 'paranoic', store, logger: () => {},
     fetchImpl: async (_url, { body }) => {
-      assert.equal(JSON.parse(body.toString()).input, '192.0.2.1');
-      return new Response(['192', '.0.2', '.1'].map((chunk) => (
+      const marker = JSON.parse(body.toString()).input;
+      assert.match(marker, /^\[REDACTED_IP_[a-f0-9]{32}\]$/);
+      return new Response([marker.slice(0, 12), marker.slice(12, 20), marker.slice(20)].map((chunk) => (
         `data: ${JSON.stringify(current(chunk))}\n\n`
       )).join(''), { headers: { 'content-type': 'text/event-stream' } });
     },

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { mappedText, legacyStore } from './helpers/mapping-fixtures.mjs';
 import { execFile } from 'node:child_process';
 import fs, { chmod, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -22,9 +23,9 @@ test('obfuscates consistently and reverses mapped addresses', async () => {
   const first = await store.obfuscate('127.0.0.1 then 10.0.0.1 then 127.0.0.1');
   const second = await store.obfuscate('10.0.0.1 and 8.8.8.8');
 
-  assert.equal(first.body, '192.0.2.1 then 192.0.2.2 then 192.0.2.1');
+  assert.equal(first.body, mappedText(store, '192.0.2.1 then 192.0.2.2 then 192.0.2.1'));
   assert.equal(first.count, 3);
-  assert.equal(second.body, '192.0.2.2 and 192.0.2.3');
+  assert.equal(second.body, mappedText(store, '192.0.2.2 and 192.0.2.3'));
   assert.equal((await store.deobfuscate(second.body)).body, '10.0.0.1 and 8.8.8.8');
 });
 
@@ -36,7 +37,7 @@ test('preserves mappings across store restarts', async () => {
   const secondStore = await MappingStore.open(filePath);
   const transformed = await secondStore.obfuscate('192.168.24.21 and 172.16.0.1');
 
-  assert.equal(transformed.body, '192.0.2.1 and 192.0.2.2');
+  assert.equal(transformed.body, mappedText(secondStore, '192.0.2.1 and 192.0.2.2'));
   const persisted = JSON.parse(await readFile(filePath, 'utf8'));
   assert.equal(persisted.mappings.length, 2);
 });
@@ -46,7 +47,8 @@ test('AWS hostnames share persistent dotted-IP mappings and restore their origin
   context.after(() => fs.rm(path.dirname(filePath), { recursive: true, force: true }));
   const store = await MappingStore.open(filePath);
   const input = '10.20.30.40 ip-10-20-30-40.ec2.internal ip-10-20-30-40.eu-west-1.compute.internal';
-  const expected = '192.0.2.1 ip-192-0-2-1.ec2.internal ip-192-0-2-1.eu-west-1.compute.internal';
+  await store.obfuscate(input);
+  const expected = mappedText(store, '192.0.2.1 ip-192-0-2-1.ec2.internal ip-192-0-2-1.eu-west-1.compute.internal');
   assert.deepEqual(await store.obfuscate(input), { body: expected, count: 3 });
   assert.deepEqual(await store.obfuscate(expected), { body: expected, count: 0 });
   const reopened = await MappingStore.open(filePath);
@@ -92,8 +94,8 @@ test('fails closed after 762 persistent mappings', async () => {
   const transformed = await store.obfuscate(addresses.join(' '));
   const output = transformed.body.split(' ');
   assert.equal(new Set(output).size, 762);
-  assert.equal(output[0], '192.0.2.1');
-  assert.equal(output[761], '203.0.113.254');
+  assert.equal(output[0], mappedText(store, '192.0.2.1'));
+  assert.equal(output[761], mappedText(store, '203.0.113.254'));
   await assert.rejects(
     store.obfuscate('172.16.0.1'),
     { code: 'MAPPING_CAPACITY_EXHAUSTED' },
@@ -112,7 +114,7 @@ test('rolls back new mappings when one request exceeds remaining capacity', asyn
     store.obfuscate('172.16.0.1 172.16.0.2'),
     { code: 'MAPPING_CAPACITY_EXHAUSTED' },
   );
-  assert.equal((await store.obfuscate('172.16.0.3')).body, '203.0.113.254');
+  assert.equal((await store.obfuscate('172.16.0.3')).body, mappedText(store, '203.0.113.254'));
 });
 
 test('refuses to open a corrupt mapping file', async () => {
@@ -129,8 +131,8 @@ test('serializes concurrent allocations', async () => {
     store.obfuscate('10.0.0.2'),
   ]);
 
-  assert.equal(first.body, '192.0.2.1');
-  assert.equal(second.body, '192.0.2.2');
+  assert.equal(first.body, mappedText(store, '192.0.2.1'));
+  assert.equal(second.body, mappedText(store, '192.0.2.2'));
 });
 
 test('coordinates allocations across store instances', async () => {
@@ -142,7 +144,8 @@ test('coordinates allocations across store instances', async () => {
     secondStore.obfuscate('10.0.0.2'),
   ]);
 
-  assert.deepEqual(new Set([first.body, second.body]), new Set(['192.0.2.1', '192.0.2.2']));
+  await firstStore.deobfuscate('');
+  assert.deepEqual(new Set([first.body, second.body]), new Set(firstStore.state.mappings.map((m) => m.fake)));
   const state = JSON.parse(await readFile(filePath, 'utf8'));
   assert.equal(state.mappings.length, 2);
 });
@@ -156,7 +159,7 @@ test('rolls back mappings when transformed output exceeds the limit', async () =
     { code: 'TRANSFORMED_BODY_TOO_LARGE' },
   );
   const transformed = await store.obfuscate('10.0.0.2');
-  assert.equal(transformed.body, '192.0.2.1');
+  assert.equal(transformed.body, mappedText(store, '192.0.2.1'));
 });
 
 test('writes mapping state with private POSIX permissions', async () => {
@@ -171,11 +174,11 @@ test('writes mapping state with private POSIX permissions', async () => {
 test('redacts an IPv4 address that touches punctuation with no surrounding space', async () => {
   const store = await MappingStore.open(await statePath());
 
-  assert.equal((await store.obfuscate('Connect to 10.0.0.1.')).body, 'Connect to 192.0.2.1.');
-  assert.equal((await store.obfuscate('ip=10.0.0.2,port=80')).body, 'ip=192.0.2.2,port=80');
-  assert.equal((await store.obfuscate('(10.0.0.3)')).body, '(192.0.2.3)');
-  assert.equal((await store.obfuscate('"10.0.0.4"')).body, '"192.0.2.4"');
-  assert.equal((await store.obfuscate('10.0.0.5;10.0.0.6')).body, '192.0.2.5;192.0.2.6');
+  assert.equal((await store.obfuscate('Connect to 10.0.0.1.')).body, mappedText(store, 'Connect to 192.0.2.1.'));
+  assert.equal((await store.obfuscate('ip=10.0.0.2,port=80')).body, mappedText(store, 'ip=192.0.2.2,port=80'));
+  assert.equal((await store.obfuscate('(10.0.0.3)')).body, mappedText(store, '(192.0.2.3)'));
+  assert.equal((await store.obfuscate('"10.0.0.4"')).body, mappedText(store, '"192.0.2.4"'));
+  assert.equal((await store.obfuscate('10.0.0.5;10.0.0.6')).body, mappedText(store, '192.0.2.5;192.0.2.6'));
 });
 
 test('still refuses to match digit sequences that are not a real IPv4 address', async () => {
@@ -233,9 +236,11 @@ for (const [name, input, expected, count] of [
     const filePath = await statePath();
     context.after(() => fs.rm(path.dirname(filePath), { recursive: true, force: true }));
     const store = await MappingStore.open(filePath);
-    assert.deepEqual(await store.obfuscate(input), { body: expected, count });
-    assert.deepEqual(await store.obfuscate(input), { body: expected, count }, 'repeat input must reuse mappings');
-    assert.deepEqual(await store.obfuscate(expected), { body: expected, count: 0 }, 'output must not be remapped');
+    const first = await store.obfuscate(input);
+    const wanted = count ? mappedText(store, expected) : expected;
+    assert.deepEqual(first, { body: wanted, count });
+    assert.deepEqual(await store.obfuscate(input), { body: wanted, count }, 'repeat input must reuse mappings');
+    assert.deepEqual(await store.obfuscate(wanted), { body: wanted, count: 0 }, 'output must not be remapped');
   });
 }
 
@@ -258,7 +263,7 @@ test('leaves no temporary file behind when a save fails before rename', {
 
   // Nothing should have been persisted, so a fresh store starts allocation over.
   const reopened = await MappingStore.open(filePath);
-  assert.equal((await reopened.obfuscate('10.0.0.9')).body, '192.0.2.1');
+  assert.equal((await reopened.obfuscate('10.0.0.9')).body, mappedText(reopened, '192.0.2.1'));
 });
 
 test('leaves no temporary file behind after a normal successful save', async () => {
@@ -273,7 +278,7 @@ test('leaves no temporary file behind after a normal successful save', async () 
 test('redacts addresses after ellipses without matching invalid dotted numbers', async () => {
   const store = await MappingStore.open(await statePath());
   const result = await store.obfuscate('...10.0.0.1 .10.0.0.1 1.2.3.4.5 999.10.0.0.1');
-  assert.equal(result.body, '...192.0.2.1 .192.0.2.1 1.2.3.4.5 999.10.0.0.1');
+  assert.equal(result.body, mappedText(store, '...192.0.2.1 .192.0.2.1 1.2.3.4.5 999.10.0.0.1'));
   assert.equal(result.count, 2);
 });
 
@@ -282,8 +287,8 @@ test('redacts JSON escapes and nested tool arguments without rounding numbers', 
   const input = String.raw`{ "input":"10\u002e0\u002e0\u002e1", "arguments":"{\"host\":\"10\\u002e0\\u002e0\\u002e1\"}", "id":9007199254740993 }`;
   const result = await store.obfuscate(input);
   const parsed = JSON.parse(result.body);
-  assert.equal(parsed.input, '192.0.2.1');
-  assert.equal(JSON.parse(parsed.arguments).host, '192.0.2.1');
+  assert.equal(parsed.input, mappedText(store, '192.0.2.1'));
+  assert.equal(JSON.parse(parsed.arguments).host, mappedText(store, '192.0.2.1'));
   assert.equal(result.count, 2);
   assert.ok(result.body.includes('9007199254740993'));
   const restored = JSON.parse((await store.deobfuscate(result.body)).body);
@@ -292,8 +297,7 @@ test('redacts JSON escapes and nested tool arguments without rounding numbers', 
 });
 
 test('restores escaped JSON addresses', async () => {
-  const store = await MappingStore.open(await statePath());
-  await store.obfuscate('10.0.0.1');
+  const store = await legacyStore(await statePath(), ['10.0.0.1']);
   const result = await store.deobfuscate(String.raw`{"host":"192\u002e0\u002e2\u002e1"}`);
   assert.equal(JSON.parse(result.body).host, '10.0.0.1');
 });
@@ -326,7 +330,7 @@ for (const method of ['writeFile', 'sync']) {
     await assert.rejects(store.obfuscate('10.0.0.1'), { code: 'EIO' });
     assert.equal((await readdir(path.dirname(filePath))).includes('mappings.json.lock'), false);
     recover();
-    assert.equal((await store.obfuscate('10.0.0.2')).body, '192.0.2.1');
+    assert.equal((await store.obfuscate('10.0.0.2')).body, mappedText(store, '192.0.2.1'));
   });
 
   test(`rolls back and cleans temporary files after state ${method} fails`, async (context) => {
@@ -336,7 +340,7 @@ for (const method of ['writeFile', 'sync']) {
     await assert.rejects(store.obfuscate('10.0.0.1'), { code: 'EIO' });
     assert.deepEqual(await readdir(path.dirname(filePath)), []);
     recover();
-    assert.equal((await store.obfuscate('10.0.0.2')).body, '192.0.2.1');
+    assert.equal((await store.obfuscate('10.0.0.2')).body, mappedText(store, '192.0.2.1'));
   });
 }
 
@@ -345,13 +349,13 @@ test('blocks on directory sync failure without rolling back a committed mapping'
   const store = await MappingStore.open(filePath);
   const recover = failFileOperation(context, (name) => name === path.dirname(filePath), 'sync');
   await assert.rejects(store.obfuscate('10.0.0.1'), { code: 'MAPPING_DURABILITY_FAILED' });
-  assert.equal(store.realToFake.get('10.0.0.1'), '192.0.2.1');
+  assert.equal(store.realToFake.get('10.0.0.1'), mappedText(store, '192.0.2.1'));
   assert.equal(JSON.parse(await readFile(filePath, 'utf8')).mappings.length, 1);
   // A retry must not skip the failed durability check just because the mapping exists.
   await assert.rejects(store.obfuscate('10.0.0.1'), { code: 'MAPPING_DURABILITY_FAILED' });
   recover();
-  assert.equal((await store.obfuscate('10.0.0.1')).body, '192.0.2.1');
-  assert.equal((await store.obfuscate('10.0.0.2')).body, '192.0.2.2');
+  assert.equal((await store.obfuscate('10.0.0.1')).body, mappedText(store, '192.0.2.1'));
+  assert.equal((await store.obfuscate('10.0.0.2')).body, mappedText(store, '192.0.2.2'));
 });
 
 test('rolls back after rename failure without leaving temporary state', async (context) => {
@@ -366,7 +370,7 @@ test('rolls back after rename failure without leaving temporary state', async (c
   assert.deepEqual(await readdir(path.dirname(filePath)), []);
   context.mock.restoreAll();
   syncBuiltinESMExports();
-  assert.equal((await store.obfuscate('10.0.0.2')).body, '192.0.2.1');
+  assert.equal((await store.obfuscate('10.0.0.2')).body, mappedText(store, '192.0.2.1'));
 });
 
 test('coordinates allocations across separate processes', async () => {
@@ -378,7 +382,8 @@ test('coordinates allocations across separate processes', async () => {
   const results = await Promise.all(['10.0.0.1', '10.0.0.2'].map((ip) => (
     promisify(execFile)(process.execPath, ['--input-type=module', '-e', script, filePath, ip])
   )));
-  assert.deepEqual(new Set(results.map((result) => result.stdout)), new Set(['192.0.2.1', '192.0.2.2']));
+  assert.equal(new Set(results.map((result) => result.stdout)).size, 2);
+  for (const result of results) assert.match(result.stdout, /^\[REDACTED_IP_[a-f0-9]{32}\]$/);
   assert.equal(JSON.parse(await readFile(filePath, 'utf8')).mappings.length, 2);
 });
 

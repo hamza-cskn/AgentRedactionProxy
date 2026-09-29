@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
+import { legacyStore } from './helpers/mapping-fixtures.mjs';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { MappingStore } from '../src/mapping-store.mjs';
 import { deobfuscateSse, protocolForPath } from '../src/sse-transform.mjs';
 
 async function mappedStore() {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'opencode-ipv4-sse-'));
-  const store = await MappingStore.open(path.join(directory, 'mappings.json'));
-  await store.obfuscate('10.123.45.67');
-  return store;
+  // Preserve the legacy fake-IP split regressions. New marker splits are
+  // independently exercised in ip-markers.test.mjs.
+  return legacyStore(path.join(directory, 'mappings.json'), ['10.123.45.67']);
 }
 
 function encodeSse(values) {
@@ -258,9 +258,9 @@ test('preserves unmapped tool targets and restores complete non-streamed fields'
 });
 
 test('restores the full mapped address rather than its mapped prefix in a chunk', async () => {
-  const store = await mappedStore();
   const addresses = Array.from({ length: 9 }, (_, index) => `172.16.0.${index + 1}`);
-  await store.obfuscate(addresses.join(' '));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'legacy-prefix-'));
+  const store = await legacyStore(path.join(directory, 'mappings.json'), ['10.123.45.67', ...addresses]);
   const input = encodeSse([
     { choices: [{ index: 0, delta: { content: '192.0.2.1' } }] },
     { choices: [{ index: 0, delta: { content: '0' } }] },

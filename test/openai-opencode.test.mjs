@@ -100,5 +100,5 @@ test('OpenCode OAuth plugin routes a redacted Responses request through the prox
   assert.equal(captured[0].headers.authorization, 'Bearer local-test-access');
   assert.equal(captured[0].headers['chatgpt-account-id'], 'local-test-account');
   assert.equal(captured[0].body.includes('10.123.45.67'), false);
-  assert.equal(captured[0].body.includes('192.0.2.1'), true);
+  assert.match(captured[0].body, /\[REDACTED_IP_[a-f0-9]{32}\]/);
 });

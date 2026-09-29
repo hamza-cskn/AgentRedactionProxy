@@ -168,7 +168,7 @@ export function createProxy({
       if (inference && requestBody.length > 0) {
         try {
           const text = new TextDecoder('utf-8', { fatal: true }).decode(requestBody);
-          const redacted = redactSecrets(text, limits);
+          const redacted = redactSecrets(text, limits, mode);
           requestBody = Buffer.from(redacted.body, 'utf8');
           secretCount = redacted.count;
         } catch {

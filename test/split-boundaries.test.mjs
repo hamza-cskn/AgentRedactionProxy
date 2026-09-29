@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { legacyStore, mappedText } from './helpers/mapping-fixtures.mjs';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -10,10 +11,11 @@ import { MappingStore } from '../src/mapping-store.mjs';
 import { createProxy } from '../src/proxy.mjs';
 import { deobfuscateSse } from '../src/sse-transform.mjs';
 
-async function storeFor(context) {
+async function storeFor(context, legacyAddresses) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'redaction-split-test-'));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  return MappingStore.open(path.join(directory, 'mappings.json'));
+  const file = path.join(directory, 'mappings.json');
+  return legacyAddresses ? legacyStore(file, legacyAddresses) : MappingStore.open(file);
 }
 
 // Invoke the real handler with explicit Buffer chunks. This avoids the OS
@@ -61,12 +63,12 @@ for (const mode of ['paranoic', 'default']) {
         captured = undefined;
         const response = await deliver(proxy, [bytes.subarray(0, cut), bytes.subarray(cut)]);
         assert.equal(response.statusCode, 200, `byte split ${cut}`);
-        assert.equal(captured, wanted, `byte split ${cut}`);
+        assert.equal(captured, mappedText(store, wanted), `byte split ${cut}`);
       }
       captured = undefined;
       const response = await deliver(proxy, [...bytes].map((byte) => Buffer.from([byte])));
       assert.equal(response.statusCode, 200);
-      assert.equal(captured, wanted, 'one byte per chunk, including inside UTF-8 sequences');
+      assert.equal(captured, mappedText(store, wanted), 'one byte per chunk, including inside UTF-8 sequences');
     });
   }
 }
@@ -83,8 +85,7 @@ const decodeSse = (text) => text.trim().split('\n\n').map((block) => JSON.parse(
 
 for (const [protocol, encode, decode] of formats) {
   test(`${protocol}: every SSE split restores complete IPs without matching their prefixes`, async (context) => {
-    const store = await storeFor(context);
-    await store.obfuscate(Array.from({ length: 10 }, (_, i) => `10.20.30.${40 + i}`).join(' '));
+    const store = await storeFor(context, Array.from({ length: 10 }, (_, i) => `10.20.30.${40 + i}`));
     const input = '😀192.0.2.1 / 192.0.2.10 / 192.0.2.1999 / ip-192-0-2-1.ec2.internal';
     const expected = '😀10.20.30.40 / 10.20.30.49 / 192.0.2.1999 / ip-10-20-30-40.ec2.internal';
     for (let cut = 0; cut <= input.length; cut += 1) {
@@ -100,9 +101,9 @@ for (const [protocol, encode, decode] of formats) {
 
 test('every upstream HTTP byte split preserves SSE parsing and restoration', async (context) => {
   const store = await storeFor(context);
-  await store.obfuscate('10.20.30.40');
+  const marker = (await store.obfuscate('10.20.30.40')).body;
   const [, encode, decode] = formats[0];
-  const bytes = Buffer.from(encodeSse(['😀192.', '0.2.1'].map(encode)));
+  const bytes = Buffer.from(encodeSse([`😀${marker.slice(0, 17)}`, marker.slice(17)].map(encode)));
   for (let cut = 0; cut <= bytes.length; cut += 1) {
     const proxy = createProxy({
       mode: 'paranoic', store, logger: () => {},
@@ -134,8 +135,7 @@ for (const [name, endpoint, events, extract] of [
   ], (items) => items.map((item) => item.content_block?.text ?? item.delta.text).join('')],
 ]) {
   test(`SSE must not restore an address prefix across ${name}`, async (context) => {
-    const store = await storeFor(context);
-    await store.obfuscate('10.20.30.4');
+    const store = await storeFor(context, ['10.20.30.4']);
     const proxy = createProxy({
       mode: 'paranoic', store, logger: () => {},
       fetchImpl: async () => new Response(encodeSse(events), {
@@ -156,8 +156,7 @@ for (const [name, endpoint, events, extract] of [
 
 for (const field of ['text', 'thinking']) {
   test(`Anthropic initial ${field} and interleaved deltas restore only complete addresses`, async (context) => {
-    const store = await storeFor(context);
-    await store.obfuscate(Array.from({ length: 10 }, (_, i) => `10.20.30.${40 + i}`).join(' '));
+    const store = await storeFor(context, Array.from({ length: 10 }, (_, i) => `10.20.30.${40 + i}`));
     const input = '192.0.2.10';
     for (let cut = 0; cut <= input.length; cut += 1) {
       const events = [
