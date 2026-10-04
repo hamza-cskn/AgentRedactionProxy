@@ -14,13 +14,21 @@ flowchart LR
 
 ## Quick start
 
-1. Requires macOS/Linux.
-2. Docker must be running.
-3. OpenCode signed in with OpenAI OAuth.
+Requires Docker running and OpenCode signed in with OpenAI OAuth. Run from your project:
+
+**macOS/Linux**
 
 ```sh
 cd ~/my-1-million-dollar-project
 curl -fsSL https://raw.githubusercontent.com/hamza-cskn/AgentRedactionProxy/main/scripts/setup.sh | bash
+opencode
+```
+
+**Windows (PowerShell)**
+
+```powershell
+cd C:\path\to\your\project
+irm https://raw.githubusercontent.com/hamza-cskn/AgentRedactionProxy/main/scripts/setup.ps1 | iex
 opencode
 ```
 ---
@@ -31,9 +39,15 @@ cd ~/project-i-dont-like
 curl -fsSL https://raw.githubusercontent.com/hamza-cskn/AgentRedactionProxy/main/scripts/setup.sh | bash -s -- uninstall
 ```
 
+On Windows:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/hamza-cskn/AgentRedactionProxy/main/scripts/setup.ps1))) uninstall
+```
+
 Uninstall preserves the shared container and mapping data.
 
-For Claude Code, Windows/Docker, or native Node.js setup, see [installation](docs/installation.md).
+For Claude Code, manual Docker, or native Node.js setup, see [installation](docs/installation.md).
 
 ## Temporary bypass
 
