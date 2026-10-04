@@ -1,4 +1,5 @@
 const PROXY_URL = 'http://127.0.0.1:8787/v1/responses';
+const DIRECT_URL = 'https://chatgpt.com/backend-api/codex/responses';
 const TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 
@@ -17,7 +18,10 @@ function accountId(token) {
     ?? value.organizations?.[0]?.id;
 }
 
-export const OpenAIIPv4Proxy = async ({ client }) => ({
+export const OpenAIIPv4Proxy = async ({ client }) => {
+  const bypass = process.env.ARP_BYPASS === '1';
+  if (bypass) console.warn('Agent Redaction Proxy: BYPASS enabled. Requests go directly to OpenAI without redaction or marker restoration.');
+  return ({
   'chat.headers': async (input, output) => {
     if (input.model.providerID !== 'openai') return;
     output.headers.originator = 'opencode';
@@ -86,10 +90,11 @@ export const OpenAIIPv4Proxy = async ({ client }) => ({
           if (residency && residency !== 'no_constraint') {
             headers.set('x-openai-internal-codex-residency', residency);
           }
-          const url = new URL(`${PROXY_URL}${original.search}`);
+          const url = new URL(`${bypass ? DIRECT_URL : PROXY_URL}${original.search}`);
           return fetch(url, { ...init, headers });
         },
       };
     },
   },
-});
+  });
+};
