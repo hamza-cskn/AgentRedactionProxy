@@ -6,7 +6,7 @@ A local proxy for OpenCode and Claude Code. It masks IPv4 addresses, recognizabl
 flowchart LR
     Interface["Claude Code"] --> Proxy["Agent Redaction Proxy"]
     Proxy --> Vendor["Anthropic servers"]
-    Interface2["Codex"] --> Proxy["`Agent Redaction Proxy
+    Interface2["OpenCode"] --> Proxy["`Agent Redaction Proxy
     *sanitizes*
 `"]
     Proxy --> Vendor2["OpenAI servers"]
