@@ -2,8 +2,6 @@
 
 A local proxy for OpenCode and Claude Code. It masks IPv4 addresses, recognizable credentials and user-defined sensitive strings before sending them to the model, then restores known markers in responses and tool arguments.
 
-## Topology
-
 ```mermaid
 flowchart LR
     Interface["Claude Code"] --> Proxy["Agent Redaction Proxy"]
