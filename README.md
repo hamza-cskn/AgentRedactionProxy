@@ -2,6 +2,28 @@
 
 A local proxy for OpenCode and Claude Code. It masks IPv4 addresses, recognizable credentials and user-defined sensitive strings before sending them to the model, then restores known markers in responses and tool arguments.
 
+## Topology
+
+```mermaid
+flowchart LR
+    subgraph Local["Your machine"]
+        OC["OpenCode"]
+        CC["Claude Code"]
+        ARP["Agent Redaction Proxy<br/>Redact outbound · Restore inbound"]
+        Store[("Persistent mappings<br/>and user-defined secrets<br/>Optional encryption")]
+        OC <-->|"localhost:8787"| ARP
+        CC <-->|"localhost:8788"| ARP
+        ARP <--> Store
+    end
+    OpenAI["OpenAI / ChatGPT"]
+    Anthropic["Anthropic"]
+    ARP -->|"Redacted requests"| OpenAI
+    OpenAI -->|"Responses with markers"| ARP
+    ARP -->|"Redacted requests"| Anthropic
+    Anthropic -->|"Responses with markers"| ARP
+    OC -.->|"ARP_BYPASS=1: no redaction"| OpenAI
+```
+
 ## Quick start
 
 1. Requires macOS/Linux.

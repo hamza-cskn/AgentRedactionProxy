@@ -2,7 +2,7 @@
 
 ## Docker
 
-Published image destination: `366366/agent-redaction-proxy`. GitHub Actions builds and smoke-tests the container after the existing test jobs pass. Pushes to `main` (or a manual workflow run on `main`) publish `latest` and `sha-<full-commit-sha>` for `linux/amd64` and `linux/arm64`. Pull requests/other branches build and test only, without registry login or publishing. The repository secret `DOCKER_ACCESS_TOKEN` must be a Docker Hub token for `366366` with write access to this image. It is used only for registry login, never passed into the Docker build.
+Published image destination: `366366/agent-redaction-proxy`. GitHub Actions runs on pushes to `main`, pull requests, and manual dispatch; pushes to `dev` do not trigger it. The container builds and smoke-tests after the existing test jobs pass. Pushes to `main` (or a manual workflow run on `main`) publish `latest` and `sha-<full-commit-sha>` for `linux/amd64` and `linux/arm64`. Pull requests and manual runs on other branches build and test only, without registry login or publishing. The repository secret `DOCKER_ACCESS_TOKEN` must be a Docker Hub token for `366366` with write access to this image. It is used only for registry login, never passed into the Docker build.
 
 The provided Compose file still builds from local source. Once an image has been published, you can download it with `docker pull 366366/agent-redaction-proxy:latest`.
 
