@@ -21,31 +21,7 @@ Place optional literal strings in `data/user_defined_secrets.json`. Existing map
 
 ### Encryption and one-way conversion
 
-| Mode | Redaction-mapping | User-defined secrets |
-|---|---|---|
-| Plaintext | `redaction_mapping.json` | `user_defined_secrets.json` |
-| Encrypted | `redaction_mapping.secret.json` | `user_defined_secrets.secret.json` |
-
-Mode is selected only by whether `master_key_secret` exists (or the file pointed to by `ARP_MASTER_KEY_FILE`). An existing key file must contain a canonical base64-encoded random 32-byte key; it is **not a human password**. Both files use Node's built-in AES-256-GCM, fresh random 12-byte nonces and 16-byte authentication tags. Their type/version is authenticated. Wrong keys, tampering, plaintext in encrypted mode or encrypted-only files without a key fail startup; nothing is converted automatically. The optional user-defined secrets file can be absent. New stores are created in the selected mode.
-
-To convert, stop every proxy using the directory, including native instances:
-
-```bash
-docker compose stop proxy
-docker compose run --rm --no-deps proxy node scripts/encrypt-storage.mjs /data
-```
-
-Alternatively run `npm run encrypt-storage -- /absolute/path/to/data` natively. The script requires a terminal and prompts with input hidden. Generate the key using a cryptographic generator/password manager (for example `openssl rand -base64 32`) and keep it out of shell arguments, environment variables and logs. Store a protected backup: losing the key loses restoration.
-
-The script validates input, writes and verifies encrypted output, publishes `master_key_secret` last, then deletes plaintext originals. Preparation failure preserves original plaintext files and removes its incomplete outputs. Existing encrypted outputs/key files are never overwritten. Missing inputs become an empty mapping/list. Marker UUIDs and legacy aliases remain unchanged. Cleanup failure after activation reports leftover plaintext files; encrypted mode remains active. This is rollback before activation, not a crash-proof multi-file transaction or secure disk erasure. Remove reported plaintext leftovers manually with all proxies stopped; protect existing backups/snapshots too. After an interrupted conversion, inspect outputs and `.encryption-conversion.lock` before manual recovery. There is no encrypted-to-plaintext script.
-
-The generated master-key file is initially in `data`. For Docker secret injection, create a private `secrets` directory and **move** `data/master_key_secret` to `secrets/master_key_secret`, then run:
-
-```bash
-docker compose -f compose.yaml -f compose.encrypted.yaml up --build -d
-```
-
-This mounts the key read-only at `/run/secrets/master_key_secret`. Use the same two `-f` options for subsequent `run`, `up` and `status` commands. Do not restart with plaintext-only Compose after removing the key from `data`. Compose file-backed secrets do not encrypt the host key file: protect `secrets/master_key_secret` with host permissions/ACLs and disk encryption. Do not store the key alongside encrypted data in backups. Encryption does not protect process memory, a compromised running container, or someone with access to both ciphertext and the key.
+See the [encryption guide](encryption.md) for quick-start Docker, Compose and native conversion, separate key injection, and failure recovery.
 
 Runtime paths: `ARP_DATA_DIR` selects the data directory, `ARP_MASTER_KEY_FILE` selects the optional key-file path, `ARP_CONFIG_FILE` selects configuration, and `ARP_LISTEN_HOST` controls the bind address. These settings are paths/addresses, not secret values. Without Docker, the default data directory remains `~/.local/share/opencode-ipv4-proxy`.
 

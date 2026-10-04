@@ -1,6 +1,6 @@
 # Security and limitations
 
-Keep the proxy local: it has no local client authentication. Mapping files contain original sensitive values; protect them and their backups. Encryption at rest is optional. See [operations](operations.md#encryption-and-one-way-conversion).
+Keep the proxy local: it has no local client authentication. Mapping files contain original sensitive values; protect them and their backups. Encryption at rest is optional. See the [encryption guide](encryption.md).
 
 ## Known Gaps — Deliberate Scope Exclusions
 
