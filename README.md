@@ -4,6 +4,36 @@
 
 It replaces real IPv4 addresses, recognizable credentials and configured literal sensitive strings with persistent random markers before requests leave your machine, and restores known markers in LLM responses and tool arguments.
 
+## Quick Start (macOS/Linux)
+
+Requires Docker running and OpenCode signed in with OpenAI OAuth. Go to your project and run:
+
+```sh
+cd "/path/to/your/project"
+curl -fsSL https://raw.githubusercontent.com/hamza-cskn/AgentRedactionProxy/main/scripts/setup.sh | bash
+```
+
+Restart OpenCode and select an OpenAI model with `/models`.
+
+To revert, run this from the same project:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hamza-cskn/AgentRedactionProxy/main/scripts/setup.sh | bash -s -- uninstall
+```
+
+Uninstall removes the installed project integration, keeping the shared Docker proxy and mapping data.
+
+### Docker only
+
+Start the proxy:
+
+```sh
+docker run -d --name agent-redaction-proxy -p 127.0.0.1:8787:8787 -p 127.0.0.1:8788:8788 -v agent-redaction-proxy-data:/data 366366/agent-redaction-proxy:latest
+docker logs agent-redaction-proxy
+```
+
+Connect your agent: [OpenCode](#opencode-openai-oauth) · [Claude Code](#claude-code-anthropic).
+
 <img width="344" height="264" alt="Agent Redaction Proxy concept" src="https://github.com/user-attachments/assets/aed2009c-9fbe-44c4-8b26-954c3fa94544" />
 
 *The model doesn't know the real IP. So answers wrongly as we want.*
@@ -46,7 +76,7 @@ It replaces real IPv4 addresses, recognizable credentials and configured literal
 
 ---
 
-## Quick Start
+## Quick Start with Node.js
 
 ### 1. Requirements
 - Node.js >= 24 (macOS or Linux).
@@ -121,6 +151,14 @@ docker compose -f compose.yaml -f compose.encrypted.yaml up --build -d
 This mounts the key read-only at `/run/secrets/master_key_secret`. Use the same two `-f` options for subsequent `run`, `up` and `status` commands. Do not restart with plaintext-only Compose after removing the key from `data`. Compose file-backed secrets do not encrypt the host key file: protect `secrets/master_key_secret` with host permissions/ACLs and disk encryption. Do not store the key alongside encrypted data in backups. Encryption does not protect process memory, a compromised running container, or someone with access to both ciphertext and the key.
 
 Runtime paths: `ARP_DATA_DIR` selects the data directory, `ARP_MASTER_KEY_FILE` selects the optional key-file path, `ARP_CONFIG_FILE` selects configuration, and `ARP_LISTEN_HOST` controls the bind address. These settings are paths/addresses, not secret values. Without Docker, the default data directory remains `~/.local/share/opencode-ipv4-proxy`.
+
+### Project installer behavior
+
+`scripts/setup.sh` supports macOS and Linux. It checks Docker/OpenCode and an existing OpenAI OAuth login, starts or reuses an installer-managed local proxy, installs `.opencode/plugins/openai-ipv4-proxy.js`, and verifies OpenAI models are available. If login is missing, run `opencode auth login --provider openai --pure` first. Existing global configuration and credentials are never modified. Other clients, including Claude Code, still use the manual setup below.
+
+The plugin and default config are downloaded from a pinned commit and checked against SHA-256 digests. A project config is created only if neither `opencode.json` nor `opencode.jsonc` exists; existing files remain byte-for-byte unchanged. Repeat setup reuses the same container and mappings. Existing unmanaged plugins/containers, conflicting bindings and symbolic-link installation paths are rejected rather than replaced. If setup fails, its project files and newly created container are rolled back; mapping volumes are never deleted.
+
+Uninstall compares files against private installation receipts before removing them. Modified files are left untouched and require manual review. The proxy is shared across projects, so uninstall does not stop or remove it; use `docker stop agent-redaction-proxy` separately if no project needs it. Receipt files live in `.opencode/.agent-redaction-proxy-install`; a stale `.opencode/.agent-redaction-proxy-setup.lock` must be removed manually only after confirming no installer is running. The hosted command becomes available after this script is committed and pushed; the Docker image must also have been published successfully.
 
 ---
 
