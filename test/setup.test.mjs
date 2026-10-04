@@ -154,7 +154,11 @@ test('pre-existing unmanaged plugin is never overwritten or removed', async (t) 
 for (const failure of ['ARP_TEST_PULL_FAIL', 'ARP_TEST_DOWNLOAD_FAIL', 'ARP_TEST_BAD_CHECKSUM', 'ARP_TEST_NO_AUTH', 'ARP_TEST_NO_MODELS', 'ARP_TEST_NO_DOCKER']) {
   test(`setup failure ${failure} rolls back project files and newly created container`, async (t) => {
     const f = await fixture(t, { [failure]: '1' });
-    await assert.rejects(f.run());
+    await assert.rejects(f.run(), (error) => {
+      assert.equal(error.code, 1);
+      assert.doesNotMatch(error.stderr, /unbound variable/);
+      return true;
+    });
     assert.equal((await f.state()).container, null);
     assert.deepEqual(await readdir(f.project), []);
   });

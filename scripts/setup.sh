@@ -2,11 +2,13 @@
 # Keep execution inside main so an incomplete piped download cannot start setup.
 main() {
   set -euo pipefail
-  local action="${1:-install}"
-  local project plugin receipt lock image container volume revision source
-  local plugin_created=0 config_created=0 receipt_created=0 lock_created=0
-  local opencode_created=0 plugins_created=0 container_created=0 container_started=0
-  local completed=0 install_id=''
+  # Bash 5 unwinds main's locals before EXIT on errexit. Keep cleanup state
+  # in script scope so rollback still works after a command fails.
+  action="${1:-install}"
+  local image volume revision source
+  plugin_created=0 config_created=0 receipt_created=0 lock_created=0
+  opencode_created=0 plugins_created=0 container_created=0 container_started=0
+  completed=0 install_id=''
   project=$(pwd -P)
   plugin="$project/.opencode/plugins/openai-ipv4-proxy.js"
   receipt="$project/.opencode/.agent-redaction-proxy-install"
