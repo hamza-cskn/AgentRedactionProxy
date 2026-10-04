@@ -1,0 +1,18 @@
+services:
+  proxy:
+    build: .
+    init: true
+    user: "${ARP_UID:-1000}:${ARP_GID:-1000}"
+    ports:
+      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:8788:8788"
+    volumes:
+      - ./data:/data
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 15s

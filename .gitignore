@@ -1,0 +1,8 @@
+/sensitive-texts.json
+/data/
+/secrets/
+**/master_key_secret
+**/redaction_mapping.json
+**/redaction_mapping.secret.json
+**/user_defined_secrets.json
+**/user_defined_secrets.secret.json

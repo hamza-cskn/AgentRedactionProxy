@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { legacyStore, mappedText } from './helpers/mapping-fixtures.mjs';
+import { legacyStore, mappedText, redactedText } from './helpers/mapping-fixtures.mjs';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -63,12 +63,12 @@ for (const mode of ['paranoic', 'default']) {
         captured = undefined;
         const response = await deliver(proxy, [bytes.subarray(0, cut), bytes.subarray(cut)]);
         assert.equal(response.statusCode, 200, `byte split ${cut}`);
-        assert.equal(captured, mappedText(store, wanted), `byte split ${cut}`);
+        assert.equal(redactedText(store, captured), mappedText(store, wanted), `byte split ${cut}`);
       }
       captured = undefined;
       const response = await deliver(proxy, [...bytes].map((byte) => Buffer.from([byte])));
       assert.equal(response.statusCode, 200);
-      assert.equal(captured, mappedText(store, wanted), 'one byte per chunk, including inside UTF-8 sequences');
+      assert.equal(redactedText(store, captured), mappedText(store, wanted), 'one byte per chunk, including inside UTF-8 sequences');
     });
   }
 }

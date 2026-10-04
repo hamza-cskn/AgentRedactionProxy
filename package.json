@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node src/main.mjs",
     "status": "node src/main.mjs status",
+    "encrypt-storage": "node scripts/encrypt-storage.mjs",
     "test": "node --test",
     "test:opencode": "IPV4_PROXY_OPENCODE_TEST=1 node --test test/opencode.test.mjs test/openai-opencode.test.mjs"
   }

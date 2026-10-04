@@ -1,0 +1,10 @@
+services:
+  proxy:
+    environment:
+      ARP_MASTER_KEY_FILE: /run/secrets/master_key_secret
+    secrets:
+      - master_key_secret
+
+secrets:
+  master_key_secret:
+    file: ./secrets/master_key_secret

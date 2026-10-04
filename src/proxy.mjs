@@ -124,7 +124,9 @@ export function createProxy({
     const inference = request.method === 'POST' && (protocol !== null || protectAllPostBodies);
     let logPathname = '[redacted-endpoint]';
     try {
-      logPathname = redactSecrets(redactIpv4ForLogging(local.pathname), limits).body;
+      if (!store.containsSensitiveTexts?.(decodeURIComponent(local.pathname))) {
+        logPathname = redactSecrets(redactIpv4ForLogging(local.pathname), limits).body;
+      }
     } catch {
       // Strict credential checks may reject a path; never echo it or let a
       // logging-only transformation escape the request handler.
@@ -166,6 +168,7 @@ export function createProxy({
       }
 
       if (inference && requestBody.length > 0) {
+        const originalBody = requestBody;
         try {
           const text = new TextDecoder('utf-8', { fatal: true }).decode(requestBody);
           const redacted = redactSecrets(text, limits, mode);
@@ -196,14 +199,18 @@ export function createProxy({
           return;
         }
         try {
-          const transformed = await store.obfuscate(requestBody.toString('utf8'), { maxBytes: maxBodyBytes });
+          if (secretCount > 0 && !store.obfuscateRequest) throw new Error('Restorable secret mappings are unavailable');
+          const transformed = store.obfuscateRequest
+            ? await store.obfuscateRequest(originalBody.toString('utf8'), { maxBytes: maxBodyBytes, mode, redactionLimits: limits })
+            : await store.obfuscate(requestBody.toString('utf8'), { maxBytes: maxBodyBytes });
           requestBody = Buffer.from(transformed.body, 'utf8');
           outboundCount = transformed.count;
+          secretCount = transformed.secretCount ?? secretCount;
         } catch (error) {
-          if (error.code === 'MAPPING_CAPACITY_EXHAUSTED') {
+          if (error.code === 'MAPPING_CAPACITY_EXHAUSTED' || error.code === 'SECRET_MAPPING_CAPACITY_EXHAUSTED') {
             response.writeHead(507, { 'content-type': 'application/json' });
             response.end(JSON.stringify({
-              error: 'IPv4 mapping capacity exhausted; request was not forwarded',
+              error: 'Redaction mapping capacity exhausted; request was not forwarded',
             }));
             logMetadata(logger, {
               mode,
@@ -230,7 +237,8 @@ export function createProxy({
             });
             return;
           }
-          if (mode === 'paranoic' || containsSensitiveIpv4(requestBody.toString('utf8'))) {
+          if (mode === 'paranoic' || secretCount > 0 || containsSensitiveIpv4(requestBody.toString('utf8'))
+            || store.containsSensitiveTexts?.(originalBody.toString('utf8'))) {
             response.writeHead(502, { 'content-type': 'application/json' });
             response.end(JSON.stringify({ error: 'Outbound IPv4 redaction failed; request was not forwarded' }));
             logMetadata(logger, {

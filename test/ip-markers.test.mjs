@@ -40,7 +40,7 @@ test('legacy migration preserves old aliases but sends markers for all real IPs'
   const marker = (await store.obfuscate('10.20.30.40')).body;
   assert.match(marker, /^\[REDACTED_IP_[a-f0-9]{32}\]$/);
   const state = JSON.parse(await readFile(file, 'utf8'));
-  assert.equal(state.version, 2);
+  assert.equal(state.version, 3);
   assert.equal(state.mappings[0].legacyFake, '192.0.2.1');
   const reopened = await MappingStore.open(file);
   assert.equal((await reopened.deobfuscate(`192.0.2.1 ${marker}`)).body, '10.20.30.40 10.20.30.40');

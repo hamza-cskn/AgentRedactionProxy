@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mappedText, legacyStore } from './helpers/mapping-fixtures.mjs';
+import { mappedText, legacyStore, redactedText } from './helpers/mapping-fixtures.mjs';
 import http from 'node:http';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -194,13 +194,13 @@ test('Claude Code auxiliary POST bodies are redacted before forwarding', async (
   assert.equal(captured.body.includes(store.state.mappings[0].fake), true);
 });
 
-test('redacts API keys from outbound bodies without persisting or restoring them', async (context) => {
+test('maps API keys privately, hides them upstream and restores them locally', async (context) => {
   const token = `sk-${'e'.repeat(24)}`;
   let captured;
   const upstream = http.createServer(async (request, response) => {
     captured = { authorization: request.headers.authorization, body: await readRequest(request) };
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ text: mappedText(store, '[REDACTED_API_KEY] 192.0.2.1') }));
+    response.end(JSON.stringify({ text: JSON.parse(captured.body).input }));
   });
   const upstreamOrigin = await listen(upstream);
   context.after(() => close(upstream));
@@ -225,14 +225,14 @@ test('redacts API keys from outbound bodies without persisting or restoring them
   assert.equal(captured.authorization, 'Bearer client-login');
   assert.equal(captured.body.includes(token), false);
   assert.equal(captured.body.includes('10.123.45.67'), false);
-  assert.equal(captured.body.includes('[REDACTED_API_KEY]'), true);
-  assert.equal((await response.text()).includes(token), false);
-  assert.equal((await readFile(store.statePath, 'utf8')).includes(token), false);
+  assert.match(captured.body, /\[REDACTED_API_KEY_[a-f0-9]{32}\]/);
+  assert.equal((await response.text()).includes(token), true);
+  assert.equal((await readFile(store.statePath, 'utf8')).includes(token), true);
   assert.equal(logs.some((line) => line.includes(token)), false);
   assert.equal(logs.some((line) => line.includes('"secretRedactions":1')), true);
 });
 
-test('default IPv4 failure does not forward the original secret', async (context) => {
+test('default mapping failure rejects restorable secrets without forwarding', async (context) => {
   const token = `ghp_${'f'.repeat(24)}`;
   let captured;
   const upstream = http.createServer(async (request, response) => {
@@ -250,8 +250,8 @@ test('default IPv4 failure does not forward the original secret', async (context
   const proxyOrigin = await listen(proxy);
   context.after(() => close(proxy));
   const response = await fetch(`${proxyOrigin}/v1/messages`, { method: 'POST', body: token });
-  assert.equal(response.status, 200);
-  assert.equal(captured, '[REDACTED_API_KEY]');
+  assert.equal(response.status, 502);
+  assert.equal(captured, undefined);
 });
 
 test('keeps MongoDB metadata and obfuscates every host IP while hiding the password', async (context) => {
@@ -277,14 +277,14 @@ test('keeps MongoDB metadata and obfuscates every host IP while hiding the passw
     body: 'mongodb://app_user:S3cr3t_99@10.20.30.40:27017,10.20.30.41:27017/analytics_db?replicaSet=rs0&ssl=true',
   });
   assert.equal(response.status, 200);
-  assert.equal(captured[0], mappedText(store, 'mongodb://app_user:REDACTED_PASSWORD@192.0.2.1:27017,192.0.2.2:27017/analytics_db?replicaSet=rs0&ssl=true'));
+  assert.equal(redactedText(store, captured[0]), mappedText(store, 'mongodb://app_user:REDACTED_PASSWORD@192.0.2.1:27017,192.0.2.2:27017/analytics_db?replicaSet=rs0&ssl=true'));
 
   const spaced = await fetch(`${proxyOrigin}/v1/messages`, {
     method: 'POST',
     body: 'mongdb : / / app_user : hunter2 @ 10.20.30.41:27017,10.20.30.40:27017/analytics_db',
   });
   assert.equal(spaced.status, 200);
-  assert.equal(captured[1], mappedText(store, 'mongdb : / / app_user : REDACTED_PASSWORD @ 192.0.2.2:27017,192.0.2.1:27017/analytics_db'));
+  assert.equal(redactedText(store, captured[1]), mappedText(store, 'mongdb : / / app_user : REDACTED_PASSWORD @ 192.0.2.2:27017,192.0.2.1:27017/analytics_db'));
 });
 
 for (const mode of ['paranoic', 'default']) {
@@ -318,9 +318,9 @@ for (const mode of ['paranoic', 'default']) {
         const response = await fetch(`${origin}${endpoint}`, { method: 'POST', body: input });
         assert.equal(await response.text(), '{}');
         assert.equal(response.status, 200);
-        assert.equal(captured.at(-1), mappedText(store, expected));
+        assert.equal(redactedText(store, captured.at(-1)), mappedText(store, expected));
       }
-      assert.deepEqual(captured, Array(3).fill(mappedText(store, expected)), 'both clients must reuse identical IP mappings');
+      assert.deepEqual(captured.map((body) => redactedText(store, body)), Array(3).fill(mappedText(store, expected)), 'both clients must reuse identical IP mappings');
     });
   }
 }
@@ -515,7 +515,7 @@ test('capacity exhaustion never forwards, including default mode', async (contex
   assert.equal(response.status, 507);
   assert.equal(upstreamCalls, 0);
   assert.deepEqual(await response.json(), {
-    error: 'IPv4 mapping capacity exhausted; request was not forwarded',
+    error: 'Redaction mapping capacity exhausted; request was not forwarded',
   });
 });
 

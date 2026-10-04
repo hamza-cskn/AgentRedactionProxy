@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { redactedText } from './helpers/mapping-fixtures.mjs';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -294,7 +295,7 @@ for (const mode of ['default', 'paranoic']) {
         forwarded = undefined;
         await proxy.listeners('request')[0](request, response);
         assert.equal(response.statusCode, 200, `${input}, history=${history}`);
-        assert.equal(forwarded.messages[0].content, `${expected}\n${store.realToFake.get('10.20.30.40')}`, input);
+        assert.equal(redactedText(store, forwarded.messages[0].content), `${expected}\n${store.realToFake.get('10.20.30.40')}`, input);
       }
     }
   });

@@ -81,7 +81,7 @@ function portTemplate(value) {
   return null;
 }
 
-function redactUrlPasswords(value) {
+function redactUrlPasswords(value, replace) {
   let body = '';
   let cursor = 0;
   let count = 0;
@@ -168,14 +168,14 @@ function redactUrlPasswords(value) {
     while (hostEnd < value.length && !/\s/.test(value[hostEnd])
       && !AUTHORITY_TERMINATORS.has(value[hostEnd])) hostEnd += 1;
     if (hostEnd === hostStart || value[hostEnd] === '@') throw new Error('Unsafe credential URL');
-    body += `${value.slice(cursor, passwordStart)}REDACTED_PASSWORD`;
+    body += value.slice(cursor, passwordStart) + replace('PASSWORD', value.slice(passwordStart, passwordEnd));
     cursor = passwordEnd;
     count += 1;
   }
   return { body: body + value.slice(cursor), count };
 }
 
-function redactValue(value, limits, decodedUrl = false, mode = 'paranoic') {
+function redactValue(value, limits, decodedUrl = false, mode = 'paranoic', replace = permanentMarker) {
   // Size guards are not credential classifiers. Check before any replacement
   // can hide an oversized candidate; never decode arbitrary base64 blobs.
   for (const [blob] of value.matchAll(BASE64_RUN)) checkSize(blob.length, limits.maxBase64Chars);
@@ -189,7 +189,7 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic') {
     const footer = `-----END ${match[1]}-----`;
     const end = value.indexOf(footer, match.index + match[0].length);
     if (end === -1) throw new Error('Unsafe private key');
-    body += `${value.slice(cursor, match.index)}[REDACTED_PRIVATE_KEY]`;
+    body += value.slice(cursor, match.index) + replace('PRIVATE_KEY', value.slice(match.index, end + footer.length));
     cursor = end + footer.length;
     count += 1;
   }
@@ -208,7 +208,7 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic') {
     if (redactValue(decoded, limits, true, mode).count > 0) throw new Error('Unsafe encoded credential URL');
   }
 
-  const urls = redactUrlPasswords(body);
+  const urls = redactUrlPasswords(body, replace);
   count += urls.count;
   body = urls.body.replace(API_KEY, (token, offset, input) => {
     // Default mode explicitly trades protection of token-shaped filenames for
@@ -216,7 +216,7 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic') {
     if (mode === 'default' && /^(?:sk-(?!(?:ant|proj|svcacct)-)|hf_)/.test(token)
       && FILENAME_SUFFIX.test(input.slice(offset + token.length))) return token;
     count += 1;
-    return '[REDACTED_API_KEY]';
+    return replace('API_KEY', token);
   });
   body = body.replace(WEB_TOKEN, (token) => {
     // Validate only the recognizable header, not signatures or claim lengths.
@@ -226,13 +226,15 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic') {
     try { header = JSON.parse(Buffer.from(token.slice(0, token.indexOf('.')), 'base64url').toString('utf8')); } catch { return token; }
     if (!header || typeof header.alg !== 'string') return token;
     count += 1;
-    return '[REDACTED_JWT]';
+    return replace('JWT', token);
   });
 
   return { body, count };
 }
 
-export function redactSecrets(text, redactionLimits, mode = 'paranoic') {
+const permanentMarker = (type) => type === 'PASSWORD' ? 'REDACTED_PASSWORD' : `[REDACTED_${type}]`;
+
+export function redactSecrets(text, redactionLimits, mode = 'paranoic', replace = permanentMarker) {
   const limits = resolveRedactionLimits(redactionLimits);
-  return transformJsonText(text, (value) => redactValue(value, limits, false, mode));
+  return transformJsonText(text, (value) => redactValue(value, limits, false, mode, replace));
 }

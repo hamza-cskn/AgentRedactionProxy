@@ -1,0 +1,10 @@
+**
+!package.json
+!config.json
+!src/
+!src/**
+!scripts/
+!scripts/**
+**/master_key_secret
+**/redaction_mapping*.json
+**/user_defined_secrets*.json

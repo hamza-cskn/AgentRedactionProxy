@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { redactedText } from './helpers/mapping-fixtures.mjs';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -65,7 +66,7 @@ for (const mode of ['default', 'paranoic']) {
           assert.equal(response.body.includes(fixture.input), false, label);
         } else {
           const expected = fixture.filename && mode === 'default' ? fixture.input : fixture.output;
-          assert.equal(forwarded.messages[0].content, `${expected}\n${store.realToFake.get('10.20.30.40')}`, label);
+          assert.equal(redactedText(store, forwarded.messages[0].content), `${expected}\n${store.realToFake.get('10.20.30.40')}`, label);
         }
       }
     }
