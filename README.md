@@ -6,22 +6,11 @@ A local proxy for OpenCode and Claude Code. It masks IPv4 addresses, recognizabl
 
 ```mermaid
 flowchart LR
-    subgraph Local["Your machine"]
-        OC["OpenCode"]
-        CC["Claude Code"]
-        ARP["Agent Redaction Proxy<br/>Redact outbound · Restore inbound"]
-        Store[("Persistent mappings<br/>and user-defined secrets<br/>Optional encryption")]
-        OC <-->|"localhost:8787"| ARP
-        CC <-->|"localhost:8788"| ARP
-        ARP <--> Store
-    end
-    OpenAI["OpenAI / ChatGPT"]
-    Anthropic["Anthropic"]
-    ARP -->|"Redacted requests"| OpenAI
-    OpenAI -->|"Responses with markers"| ARP
-    ARP -->|"Redacted requests"| Anthropic
-    Anthropic -->|"Responses with markers"| ARP
-    OC -.->|"ARP_BYPASS=1: no redaction"| OpenAI
+    User["User"] <--> OpenCode["OpenCode"]
+    User <--> ClaudeCode["Claude Code"]
+    OpenCode <--> Proxy["Agent Redaction Proxy"]
+    ClaudeCode <--> Proxy
+    Proxy <--> Vendor["AI vendor"]
 ```
 
 ## Quick start
