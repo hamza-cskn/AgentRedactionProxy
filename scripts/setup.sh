@@ -16,7 +16,7 @@ main() {
   image='366366/agent-redaction-proxy:latest'
   container='agent-redaction-proxy'
   volume='agent-redaction-proxy-data'
-  revision='48db0510c92dd7b152331498fd0d76651b5fe9bb'
+  revision='9bc1edbe0de7df4f11423d53fbef61972cd155cd'
   source="https://raw.githubusercontent.com/hamza-cskn/AgentRedactionProxy/$revision"
 
   fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -101,7 +101,7 @@ main() {
     (umask 077; mkdir "$receipt")
     receipt_created=1
     curl -fsSL --proto '=https' --tlsv1.2 "$source/.opencode/plugins/openai-ipv4-proxy.js" -o "$receipt/plugin.reference"
-    [[ $(checksum "$receipt/plugin.reference") == 6cdd0455045d2f42802127bc19eb17c9e72cfb74283149a2dc32f5064e983fb5 ]] || fail 'Plugin checksum mismatch. Nothing installed.'
+    [[ $(checksum "$receipt/plugin.reference") == 2ea1afe96670ab0d994e6f1e4ed45c10962361e8f7851ec8db9a776f4b423b28 ]] || fail 'Plugin checksum mismatch. Nothing installed.'
     if [[ ! -e $project/opencode.json && ! -e $project/opencode.jsonc ]]; then
       curl -fsSL --proto '=https' --tlsv1.2 "$source/examples/opencode.jsonc" -o "$receipt/config.reference"
       [[ $(checksum "$receipt/config.reference") == 2b5b98a5f7d694cc699280a0d072030cae33c24819d294a5c36e57f90e48917e ]] || fail 'Config checksum mismatch. Nothing installed.'

@@ -1,5 +1,5 @@
 {
-  "mode": "paranoic",
+  "mode": "default",
   "sensitiveTextsFile": null,
   "redactionLimits": {
     "maxApiTokenChars": 4096,

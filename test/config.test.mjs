@@ -7,6 +7,11 @@ import test from 'node:test';
 import { loadConfig } from '../src/config.mjs';
 import { DEFAULT_REDACTION_LIMITS } from '../src/redaction-limits.mjs';
 
+test('shipped config uses default mode', async () => {
+  const config = await loadConfig(new URL('../config.json', import.meta.url));
+  assert.equal(config.mode, 'default');
+});
+
 for (const [mode, accepted] of [
   ['default', true],
   ['paranoic', true],
