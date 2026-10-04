@@ -6,11 +6,9 @@ A local proxy for OpenCode and Claude Code. It masks IPv4 addresses, recognizabl
 
 ```mermaid
 flowchart LR
-    User["User"] <--> OpenCode["OpenCode"]
-    User <--> ClaudeCode["Claude Code"]
-    OpenCode <--> Proxy["Agent Redaction Proxy"]
-    ClaudeCode <--> Proxy
-    Proxy <--> Vendor["AI vendor"]
+    User["User"] --> Interface["OpenCode/ClaudeCode"]
+    OpenCode --> Proxy["Agent Redaction Proxy"]
+    Proxy --> Vendor["Anthropic/OpenAI servers"]
 ```
 
 ## Quick start
