@@ -43,6 +43,24 @@ The values above are configurable defaults. Omitted entries use their defaults; 
 - Exceeding any limit rejects the outbound request with HTTP 502 in **both modes**, without forwarding it, truncating it, or including the candidate in logs/errors. Checks run before redaction can remove a candidate. Malformed JWT-like candidates are also bounded before header parsing.
 - Arbitrary base64 is not decoded or recursively searched for hidden secrets. The existing 64 MiB body limit remains separate; these guards do not enable incremental streaming or limit inbound restoration.
 
+### URL schemes
+
+Every scheme uses the same credential scanner. Exact scheme names enable the small syntax exceptions below; an unknown or misspelled scheme still gets scanned. Scheme names are case-insensitive. The proxy redacts text, not connection settings: it does not validate or connect to these URLs.
+
+| Schemes | Handling |
+| --- | --- |
+| `http`, `https`, `ws`, `wss` | Recognize numeric ports followed by literal replacement references, such as `:80${2}`, `:8080$2`, or `:443${path}`. |
+| `mongodb`, `postgres`, `postgresql` | Recognize host lists whose ports use `$PORT` or `${PORT}`, including bracketed IPv6 hosts. |
+| `sqlserver`, including `jdbc:sqlserver` | Recognize `$PORT` or `${PORT}` followed by semicolon options, such as `:${PORT};databaseName=app`. |
+| `mongodb+srv`, `mysql`, `mariadb`, `redis`, `rediss`, `amqp`, `amqps`, `ssh`, `sftp`, `ftp`, `ftps` | Use shared host, port, template, and credential rules. Empty usernames such as `redis://:password@host` still have their passwords redacted. |
+| Unknown or mistyped schemes, such as `mongdb` | Use the conservative shared rules; no fuzzy matching grants a syntax exception. |
+
+These rules apply in both modes. A literal `@host` takes precedence over port notation: `http://user:80${2}@host` still redacts the entire password `80${2}`. The new syntax exceptions also reject a later `@` after `/`, `?`, or `#` within the same text span, because that could be a malformed credential. They do not evaluate template expressions or infer field-name secrets.
+
+Spaced separators remain supported. Recognizable credentials with a missing colon, a missing slash, extra slashes, or repeated colons are rejected instead of forwarded. This covers forms such as `htps//user:secret@host` and `mongodb:///user:secret@host`; it does not promise to recognize arbitrary text corruption.
+
+The underlying formats are documented in [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986#section-3.2), [MongoDB connection strings](https://www.mongodb.com/docs/manual/reference/connection-string-formats/), [PostgreSQL connection URIs](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING-URIS), and [SQL Server JDBC URLs](https://learn.microsoft.com/en-us/sql/connect/jdbc/building-the-connection-url). Replacement-reference syntax follows [Go's regexp templates](https://pkg.go.dev/regexp#Regexp.Expand). Template acceptance is a proxy text-handling rule, not a claim that a database client accepts an unexpanded template.
+
 ### Literal matching boundaries
 
 - In both modes, a hostname and numeric port (0–65535) can end before whitespace/prose, a dash, or a Markdown link target. For example, `http://localhost:8080 (contact dev@example.com)` no longer swallows the email into userinfo. An immediate `@`, including horizontal spacing before it, still triggers password redaction; contiguous passwords containing dashes remain protected. This intentionally treats `http://alice:8080 more@host` as a URL followed by text, not a password containing raw spaces. Malformed credential forms without a recognized URL/prose boundary still fail closed. Percent-encoded password spaces remain protected.

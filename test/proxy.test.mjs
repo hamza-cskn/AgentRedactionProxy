@@ -360,6 +360,37 @@ for (const [name, input] of [
   });
 }
 
+for (const [body, diagnostic] of [
+  ['mongdb://user:pass word@10.20.30.40', { name: 'Error', reason: 'unsafe-credential-url' }],
+  ['-----BEGIN PRIVATE KEY-----\nprivate-content', { name: 'Error', reason: 'unsafe-private-key' }],
+  ['a'.repeat(65537), { name: 'Error', reason: 'redaction-candidate-too-large' }],
+  ['https%3a%2f%2fuser%3apassword%40example.com', { name: 'Error', reason: 'unsafe-encoded-credential-url' }],
+  ['https%3a%2f%FF', { name: 'Error', reason: 'unsafe-encoded-url' }],
+  [Buffer.from([0xff]), { name: 'TypeError', code: 'ERR_ENCODING_INVALID_ENCODED_DATA' }],
+]) {
+  test(`logs safe redaction failure: ${diagnostic.reason ?? diagnostic.code}`, async (context) => {
+    const logs = [];
+    let upstreamCalls = 0;
+    const proxy = createProxy({
+      mode: 'default', store: {},
+      logger: (line) => logs.push(JSON.parse(line)),
+      fetchImpl: async () => { upstreamCalls += 1; return new Response('{}'); },
+    });
+    const origin = await listen(proxy);
+    context.after(() => close(proxy));
+    const response = await fetch(`${origin}/v1/responses`, { method: 'POST', body });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), {
+      error: 'Outbound secret redaction failed; request was not forwarded',
+    });
+    assert.equal(upstreamCalls, 0);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].warning, 'outbound-secret-redaction-failed');
+    assert.deepEqual(logs[0].error, diagnostic);
+    assert.equal(JSON.stringify(logs).includes(body.toString()), false);
+  });
+}
+
 test('unreadable outbound text fails closed even in default mode', async (context) => {
   let upstreamCalls = 0;
   const upstream = http.createServer((_request, response) => {
@@ -878,6 +909,50 @@ test('redacts escaped JSON before it reaches the upstream parser', async (contex
   assert.equal(response.status, 200);
   assert.equal(captured.input, store.state.mappings[0].fake);
 });
+
+for (const phase of ['upstream-fetch', 'upstream-body']) {
+  test(`logs safe error causes during ${phase}`, async (context) => {
+    const secret = 'private-prompt Bearer secret-token 10.20.30.40';
+    const socketError = Object.assign(new Error(secret), { code: 'ECONNRESET' });
+    const unsafeError = Object.assign(new Error(secret), { name: secret, code: secret });
+    unsafeError.cause = unsafeError;
+    const error = new TypeError(secret, {
+      cause: new AggregateError([socketError, unsafeError], secret),
+    });
+    const logs = [];
+    const proxy = createProxy({
+      mode: 'default', store: {}, logger: (line) => logs.push(JSON.parse(line)),
+      fetchImpl: async () => {
+        if (phase === 'upstream-fetch') throw error;
+        return new Response(new ReadableStream({
+          start(controller) { controller.error(error); },
+        }));
+      },
+    });
+    const origin = await listen(proxy);
+    context.after(() => close(proxy));
+    const response = await fetch(`${origin}/v1/models`);
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: 'Proxy request failed' });
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].failureStage, phase);
+    assert.equal(logs[0].warning, 'proxy-request-failed');
+    assert.deepEqual(logs[0].error, {
+      name: 'TypeError',
+      cause: {
+        name: 'AggregateError',
+        errors: [
+          { name: 'Error', code: 'ECONNRESET' },
+          {
+            name: 'UnknownError', code: 'UNKNOWN_ERROR_CODE',
+            cause: { name: 'UnknownError', code: 'UNKNOWN_ERROR_CODE' },
+          },
+        ],
+      },
+    });
+    assert.equal(JSON.stringify(logs).includes(secret), false);
+  });
+}
 
 for (const phase of ['headers', 'body']) {
   test(`expires an upstream stalled during ${phase}`, { timeout: 3000 }, async (context) => {
