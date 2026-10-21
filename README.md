@@ -2,6 +2,9 @@
 
 A local proxy for OpenCode and Claude Code. It masks IPv4 addresses, recognizable credentials and user-defined sensitive strings before sending them to the model, then restores known markers in responses and tool arguments.
 
+<img width="723" height="172" alt="image" src="https://github.com/user-attachments/assets/1759104f-1d9b-4bf1-96a0-c1d816b8b368" />
+
+
 ## Quick start
 
 1. Requires macOS/Linux.
