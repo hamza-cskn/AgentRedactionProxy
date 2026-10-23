@@ -10,7 +10,7 @@ import { exists, loadStorage, storagePaths } from './encrypted-storage.mjs';
 
 const HOST = process.env.ARP_LISTEN_HOST || '127.0.0.1';
 const ROUTES = [
-  { client: 'opencode-openai-oauth', port: 8787, upstream: 'https://chatgpt.com/backend-api/codex' },
+  { client: 'opencode-openai-oauth', port: 8787, upstream: 'https://api.openai.com/v1' },
   { client: 'claude-code', port: 8788, upstream: 'https://api.anthropic.com/v1' },
 ];
 const configUrl = process.env.ARP_CONFIG_FILE || new URL('../config.json', import.meta.url);

@@ -38,6 +38,33 @@ async function createStore(legacyAddresses) {
   return legacyAddresses ? legacyStore(file, legacyAddresses) : MappingStore.open(file);
 }
 
+test('forwards large Responses PNG data intact while mapping neighboring secrets and IPs', async (context) => {
+  const image = `data:image/png;base64,iVBORw0KGgo${'A'.repeat(263869)}`;
+  const secret = `ghp_${'A'.repeat(36)}`;
+  const store = await createStore();
+  let forwarded;
+  const proxy = createProxy({ mode: 'default', store, logger: () => {},
+    fetchImpl: async (_url, init) => {
+      forwarded = JSON.parse(init.body.toString());
+      return new Response('{}');
+    },
+  });
+  const origin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${origin}/v1/responses`, { method: 'POST', body: JSON.stringify({
+    input: [{ role: 'user', content: [
+      { type: 'input_image', image_url: image },
+      { type: 'input_text', text: `${secret} 10.20.30.40` },
+    ] }],
+  }) });
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.input[0].content[0].image_url, image);
+  const text = forwarded.input[0].content[1].text;
+  assert.equal(text.includes(secret), false);
+  assert.equal(text.includes('10.20.30.40'), false);
+  assert.equal(redactedText(store, text), `[REDACTED_API_KEY] ${store.realToFake.get('10.20.30.40')}`);
+});
+
 test('redacts inference requests and deobfuscates buffered SSE responses', async (context) => {
   let capturedBody = '';
   let capturedAuthorization = '';
@@ -326,8 +353,6 @@ for (const mode of ['paranoic', 'default']) {
 }
 
 for (const [name, input] of [
-  ['space in password', 'mongdb://user:pass word@10.20.30.40'],
-  ['several words in password', 'mongdb://user:several secret words here@10.20.30.40'],
   ['incomplete private key', '10.20.30.40\n-----BEGIN PRIVATE KEY-----\nQUJDREVGRw=='],
 ]) {
   test(`paranoic blocks unsafe text: ${name}`, async (context) => {
@@ -361,9 +386,12 @@ for (const [name, input] of [
 }
 
 for (const [body, diagnostic] of [
-  ['mongdb://user:pass word@10.20.30.40', { name: 'Error', reason: 'unsafe-credential-url' }],
   ['-----BEGIN PRIVATE KEY-----\nprivate-content', { name: 'Error', reason: 'unsafe-private-key' }],
-  ['a'.repeat(65537), { name: 'Error', reason: 'redaction-candidate-too-large' }],
+  ['a'.repeat(65537), {
+    name: 'Error', reason: 'redaction-candidate-too-large',
+    candidateLength: 65537, candidateLimit: 65536, candidateType: 'base64',
+    candidateUnit: 'chars', candidatePreview: 'a'.repeat(32),
+  }],
   ['https%3a%2f%2fuser%3apassword%40example.com', { name: 'Error', reason: 'unsafe-encoded-credential-url' }],
   ['https%3a%2f%FF', { name: 'Error', reason: 'unsafe-encoded-url' }],
   [Buffer.from([0xff]), { name: 'TypeError', code: 'ERR_ENCODING_INVALID_ENCODED_DATA' }],

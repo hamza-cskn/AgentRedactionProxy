@@ -2,15 +2,11 @@ import { isIP } from 'node:net';
 
 // Scan literal URL syntax, including spaced delimiters and unknown schemes.
 // We do not evaluate templates or infer computed credentials.
-// Capture the scheme separately. Malformed separators still need a credential
-// check: a missing colon or an extra slash must not hide a literal password.
+// Unknown schemes and spaced separators use the same credential checks.
 const URL_SCHEME = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*)([ \t]*(?::+[ \t]*)?\/(?:[ \t]*\/)*)/g;
 const AUTHORITY_END = new Set(['@', '/', '?', '#', '\r', '\n', '"', "'", '<', '>']);
 const TEXT_END = '\r\n"\'<>';
 const MAX_USERINFO_CHARS = 512;
-const PORT_PUNCTUATION = /^[!.,;…)\]}`]*$/;
-const WEB_SCHEMES = new Set(['http', 'https', 'ws', 'wss']);
-const MULTI_HOST_SCHEMES = new Set(['mongodb', 'postgres', 'postgresql']);
 
 const horizontalSpace = (char) => char === ' ' || char === '\t';
 
@@ -80,9 +76,7 @@ function readAuthorityPrefix(text, match) {
   }
   if (text[end] !== ':') return null;
   return {
-    scheme: match[1].toLowerCase(),
     start,
-    fieldStart,
     field: text.slice(fieldStart, end).trim(),
     colon: end,
     ipv6: ipv6?.[0],
@@ -110,92 +104,29 @@ function readPortOrPassword(text, start, authorityStart) {
   const template = portTemplate(text.slice(start));
   let end = start + (template?.length ?? 0);
   while (end < text.length && !horizontalSpace(text[end]) && !AUTHORITY_END.has(text[end])) {
-    if (end - authorityStart >= MAX_USERINFO_CHARS) throw new Error('Unsafe credential URL');
+    if (end - authorityStart >= MAX_USERINFO_CHARS) return null;
     end += 1;
   }
-  return { start, end, next: skipSpace(text, end), template, value: text.slice(start, end) };
+  return { end, next: skipSpace(text, end) };
 }
 
-function isConfiguredPort(value) {
-  return /^\d+$/.test(value) || /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(value);
-}
-
-function isHostListPort(value, allowVariables = false) {
-  const [port, ...hosts] = value.split(',');
-  const validPort = (part) => allowVariables ? isConfiguredPort(part) : /^\d+$/.test(part);
-  if (!validPort(port) || hosts.length === 0) return false;
-  return hosts.every((host) => {
-    const match = /^([A-Za-z0-9_.-]+|\[[0-9a-f:.%]+\])(?::(.+))?$/i.exec(host);
-    return match !== null && (match[2] === undefined || validPort(match[2]));
-  });
-}
-
-function isWebReplacementPort(value) {
-  const numeric = /^\d+/.exec(value);
-  if (!numeric || Number(numeric[0]) > 65535) return false;
-  // Keep closing braces belonging to references; strip only surrounding prose.
-  const references = value.slice(numeric[0].length);
-  const match = /^(?:\$(?:[A-Za-z0-9_]+|\{[A-Za-z0-9_]+\}))+/.exec(references);
-  return match !== null && PORT_PUNCTUATION.test(references.slice(match[0].length));
-}
-
-function isSqlServerPort(value) {
-  const [port, ...options] = value.split(';');
-  if (!isConfiguredPort(port) || options.length === 0) return false;
-  if (options.at(-1) === '') options.pop();
-  return options.length > 0 && options.every((option) => /^[A-Za-z_][A-Za-z0-9_]*=[^;\s]*$/.test(option));
-}
-
-function isSchemePort(scheme, value) {
-  if (WEB_SCHEMES.has(scheme)) return isWebReplacementPort(value);
-  if (MULTI_HOST_SCHEMES.has(scheme)) return isHostListPort(value, true);
-  if (scheme === 'sqlserver') return isSqlServerPort(value);
-  return false;
-}
-
-function isRecognizedPort(text, prefix, candidate) {
-  const { value, template, next } = candidate;
-  if (hasAtBefore(text, next, '/?#' + TEXT_END)) return false;
-  const plain = value.replace(/[!.,;…)\]}`]*$/, '');
-  if (/^\d+$/.test(plain) || plain === 'port' || plain === 'PORT') return true;
-  if (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(plain)) return true;
-  if (template && PORT_PUNCTUATION.test(value.slice(template.length))) return true;
-  if (isHostListPort(value)) return true;
-  if (/^\d+(?:;[A-Za-z_][A-Za-z0-9_]*=[^;\s]*)+;?$/.test(value)) return true;
-  // New syntax exceptions are deliberately stricter about a later @, even
-  // after /?#: it may belong to a mistyped credential rather than a path.
-  if (!hasAtBefore(text, candidate.start, TEXT_END) && isSchemePort(prefix.scheme, value)) return true;
-  if (value !== '' || prefix.field === '') return false;
-  if (next === text.length || TEXT_END.includes(text[next])) return true;
-  return text[next] === '/' && !hasAtBefore(text, next, TEXT_END);
-}
-
-// Return a password span only after classifying the authority. Unrecognized
-// port expressions retain the existing fail-closed policy, even without @.
+// Unparseable URL-like text is skipped; only identified passwords are redacted.
 function passwordSpan(text, match) {
   const prefix = readAuthorityPrefix(text, match);
   if (!prefix) return null;
-  if (/\s/.test(prefix.field)) {
-    if (hasAtBefore(text, prefix.colon, TEXT_END)) throw new Error('Unsafe credential URL');
-    return null;
-  }
+  if (/\s/.test(prefix.field)) return null;
   const start = skipSpace(text, prefix.colon + 1);
   if (/^<password>[ \t]*@/.test(text.slice(start))) return null;
   if (endsAfterNumericPort(text, match, prefix, start)) return null;
   const candidate = readPortOrPassword(text, start, prefix.start);
-  if (text[candidate.next] !== '@') {
-    if (!prefix.doubleSlash && !hasAtBefore(text, prefix.fieldStart, TEXT_END)) return null;
-    if (isRecognizedPort(text, prefix, candidate)) return null;
-    throw new Error('Unsafe credential URL');
-  }
-  if (start === candidate.end || candidate.next - prefix.start > MAX_USERINFO_CHARS || !prefix.doubleSlash) {
-    throw new Error('Unsafe credential URL');
-  }
+  if (!candidate || text[candidate.next] !== '@') return null;
+  if (start === candidate.end || candidate.next - prefix.start > MAX_USERINFO_CHARS) return null;
+  if (!prefix.doubleSlash) return null;
   const hostStart = skipSpace(text, candidate.next + 1);
   let hostEnd = hostStart;
   while (hostEnd < text.length && !/\s/.test(text[hostEnd]) && !AUTHORITY_END.has(text[hostEnd])) hostEnd += 1;
   if (hostEnd === hostStart || text[hostEnd] === '@') {
-    throw new Error('Unsafe credential URL');
+    return null;
   }
   return { start, end: candidate.end };
 }

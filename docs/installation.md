@@ -46,7 +46,7 @@ For Compose and encryption, see [operations](operations.md#docker).
 
 ### Project installer behavior
 
-`scripts/setup.sh` supports macOS and Linux. It checks Docker/OpenCode and an existing OpenAI OAuth login, starts or reuses an installer-managed local proxy, installs `.opencode/plugins/openai-ipv4-proxy.js`, and verifies OpenAI models are available. If login is missing, run `opencode auth login --provider openai --pure` first. Existing global configuration and credentials are never modified. Other clients, including Claude Code, still use the manual setup below.
+`scripts/setup.sh` supports macOS and Linux. It checks Docker/OpenCode and an existing OpenAI OAuth login, starts or reuses an installer-managed local proxy, installs `.opencode/plugins/openai-ipv4-proxy.js`, and verifies OpenAI models are available. If login is missing, run `opencode auth login` and select OpenAI OAuth first. Existing global configuration and credentials are never modified. Other clients, including Claude Code, still use the manual setup below.
 
 The plugin and default config are downloaded from a pinned commit and checked against SHA-256 digests. A project config is created only if neither `opencode.json` nor `opencode.jsonc` exists; existing files remain byte-for-byte unchanged. Repeat setup reuses the same container and mappings. Existing unmanaged plugins/containers, conflicting bindings and symbolic-link installation paths are rejected rather than replaced. If setup fails, its project files and newly created container are rolled back; mapping volumes are never deleted.
 

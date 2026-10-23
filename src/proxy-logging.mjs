@@ -1,4 +1,5 @@
 import { getSystemErrorMap } from 'node:util';
+import { RedactionCandidateSizeError } from './redaction-limits.mjs';
 
 export function logMetadata(logger, metadata) {
   logger(JSON.stringify({ timestamp: new Date().toISOString(), ...metadata }));
@@ -24,7 +25,6 @@ const SAFE_ERROR_CODES = new Set([
 
 const SAFE_REDACTION_REASONS = new Map([
   ['Redaction candidate exceeds configured limit', 'redaction-candidate-too-large'],
-  ['Unsafe credential URL', 'unsafe-credential-url'],
   ['Unsafe private key', 'unsafe-private-key'],
   ['Unsafe encoded URL', 'unsafe-encoded-url'],
   ['Unsafe encoded credential URL', 'unsafe-encoded-credential-url'],
@@ -32,6 +32,7 @@ const SAFE_REDACTION_REASONS = new Map([
 
 // Never log arbitrary exception strings: messages, stacks and even custom
 // names/codes can contain request data. Bound causes, including aggregate errors.
+// Candidate size failures deliberately include a bounded request-text preview.
 export function errorDiagnostics(error, depth = 0) {
   const result = {
     name: SAFE_ERROR_NAMES.has(error?.name) ? error.name : 'UnknownError',
@@ -41,6 +42,13 @@ export function errorDiagnostics(error, depth = 0) {
   }
   if (SAFE_REDACTION_REASONS.has(error?.message)) {
     result.reason = SAFE_REDACTION_REASONS.get(error.message);
+  }
+  if (error instanceof RedactionCandidateSizeError) {
+    result.candidateLength = error.candidateLength;
+    result.candidateLimit = error.candidateLimit;
+    result.candidateType = error.candidateType;
+    result.candidateUnit = error.candidateUnit;
+    result.candidatePreview = error.candidatePreview;
   }
   if (depth < 3) {
     if (error?.cause) result.cause = errorDiagnostics(error.cause, depth + 1);

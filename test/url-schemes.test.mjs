@@ -16,6 +16,8 @@ const schemes = [
   'sqlserver', 'jdbc:sqlserver', 'jdbc:postgresql', 'custom+db.v2',
 ];
 const preserved = [
+  'http://:http/-/healthy',
+  'http://:http/-/ready',
   'http://grafana.example:80${2}',
   'HTTPS://grafana.example:443${path}',
   'ws://localhost:8080$2',
@@ -33,6 +35,20 @@ const preserved = [
 const template = '{{ define "monitoring.link" }}{{ reReplaceAll "^https?://(localhost|127[.]0[.]0[.]1):3000(/|$)" "http://grafana.seyirmobil.com:80${2}" . }}{{ end }}';
 
 for (const mode of ['default', 'paranoic']) {
+  test(`${mode}: container image metadata and kubectl JSONPath text are preserved`, () => {
+    const samples = [
+      'CONTAINER=ruler IMAGE=quay.io/thanos/thanos:v0.42.4\nRESOURCES={}',
+      'CONTAINER=prometheus-rule-importer IMAGE=alpine/kubectl:latest\nRESOURCES={}\nPROBES: startup= liveness= readiness=',
+      'PROBES: startup={"failureThreshold":60,"httpGet":{"path":"/-/ready","port":"http","scheme":"HTTP"},"periodSeconds":5,"successThreshold":1,"timeoutSeconds":5}',
+      String.raw`kubectl --kubeconfig kubeconfigs/apex-readonly.yaml -n thanos get pod thanos-ruler-0 -o jsonpath='{range .spec.containers[*]}CONTAINER={.name}{" IMAGE="}{.image}{"\nRESOURCES="}{.resources}{"\nPROBES: startup="}{.startupProbe}{" liveness="}{.livenessProbe}{" readiness="}{.readinessProbe}{"\n\n"}{end}'`,
+    ];
+    for (const sample of samples) {
+      for (const text of [sample, JSON.stringify({ arguments: JSON.stringify({ content: sample }) })]) {
+        assert.deepEqual(redactSecrets(text, undefined, mode), { body: text, count: 0 });
+      }
+    }
+  });
+
   test(`${mode}: common scheme syntax and the Grafana replacement remain intact`, () => {
     for (const input of [...preserved, template]) {
       for (const text of [input, JSON.stringify({ arguments: JSON.stringify({ content: input }) })]) {
@@ -76,7 +92,7 @@ for (const mode of ['default', 'paranoic']) {
     }
   });
 
-  test(`${mode}: malformed delimiters and ambiguous new port forms fail closed`, () => {
+  test(`${mode}: unparseable URL-like text is preserved`, () => {
     const unsafe = [
       'http://alice:80${2}secret',
       'http://alice:80${2} word@host',
@@ -97,10 +113,20 @@ for (const mode of ['default', 'paranoic']) {
       }
     }
     for (const input of unsafe) {
-      assert.throws(() => redactSecrets(input, undefined, mode), /Unsafe credential URL/, input);
+      assert.deepEqual(redactSecrets(input, undefined, mode), { body: input, count: 0 }, input);
       const nested = JSON.stringify({ arguments: JSON.stringify({ content: input }) });
-      assert.throws(() => redactSecrets(nested, undefined, mode), /Unsafe credential URL/, input);
+      assert.deepEqual(redactSecrets(nested, undefined, mode), { body: nested, count: 0 }, input);
     }
+  });
+
+  test(`${mode}: skipping a URL still redacts later credentials and tokens`, () => {
+    const token = `ghp_${'Ab12'.repeat(8)}`;
+    const input = `http://:http/-/healthy https://alice:secret word@host https://bob:protected@host ${token}`;
+    const expected = input.replace(':protected@', ':REDACTED_PASSWORD@').replace(token, '[REDACTED_API_KEY]');
+    assert.deepEqual(redactSecrets(input, undefined, mode), { body: expected, count: 2 });
+    const nested = JSON.stringify({ arguments: JSON.stringify({ content: input }) });
+    const nestedExpected = JSON.stringify({ arguments: JSON.stringify({ content: expected }) });
+    assert.deepEqual(redactSecrets(nested, undefined, mode), { body: nestedExpected, count: 2 });
   });
 
   test(`${mode}: the affected template can be sent again as history while credentials stay protected`, async (context) => {
@@ -117,7 +143,7 @@ for (const mode of ['default', 'paranoic']) {
       },
     });
     for (const history of [false, true]) {
-      const messages = [{ role: 'user', content: `${template}\n10.20.30.40\nmongdb://alice:80secret@db.example/app` }];
+      const messages = [{ role: 'user', content: `${template}\nhttp://:http/-/healthy\n10.20.30.40\nmongdb://alice:80secret@db.example/app` }];
       if (history) messages.push({ role: 'assistant', content: 'OK' }, { role: 'user', content: 'Continue' });
       const request = Object.assign(Readable.from([Buffer.from(JSON.stringify({ messages }))]), {
         method: 'POST', url: '/v1/responses', headers: {},
@@ -134,6 +160,7 @@ for (const mode of ['default', 'paranoic']) {
     assert.equal(captured[0].messages[0].content, captured[1].messages[0].content);
     for (const { messages } of captured) {
       assert.ok(messages[0].content.includes(template));
+      assert.ok(messages[0].content.includes('http://:http/-/healthy'));
       assert.ok(!messages[0].content.includes('80secret'));
       assert.ok(!messages[0].content.includes('10.20.30.40'));
       assert.match(messages[0].content, /\[REDACTED_PASSWORD_[a-f0-9]{32}\]/);

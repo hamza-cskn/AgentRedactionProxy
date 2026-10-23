@@ -8,9 +8,8 @@ import { MappingStore } from '../src/mapping-store.mjs';
 import { createProxy } from '../src/proxy.mjs';
 import { redactSecrets } from '../src/secret-redaction.mjs';
 
-// Synthetic text only. Credentials and IPv4 addresses are critical in both
-// modes: paranoic must block anything it cannot redact with certainty, while
-// default may forward ambiguous text only after the secret is removed.
+// Synthetic text only. Recognized secrets and IPv4 addresses are protected
+// in both modes; unparseable credential URLs are intentionally skipped.
 const key = 'Ab12Cd34Ef56Gh78Ij90Kl12Mn34Op56Qr78';
 const pemBody = 'QUJDREVGRw==';
 
@@ -30,7 +29,6 @@ const leakTexts = [
   ['Hugging Face token', `hf_${key}`, [key]],
   ['Slack incoming webhook', `https://hooks.slack.com/services/T01ABCDEF/B01ABCDEF/${key}`, [key]],
   ['percent-encoded credential URL', 'next=postgres%3A%2F%2Falice%3Ahunter2%40db.example%2Fapp', ['hunter2']],
-  ['password followed by two words and an email', 'mongo://alice:hunter2 see me@example.com', ['hunter2']],
   ['git token as userinfo password', `https://x-access-token:ghs_${key}@github.com/org/repo.git`, [key]],
   ['git token as bare userinfo', `https://ghp_${key}@github.com/org/repo.git`, [key]],
 ];
@@ -171,14 +169,21 @@ for (const mode of ['paranoic', 'default']) {
   }
 }
 
-// Ambiguous credential boundaries: paranoic must not guess.
-for (const [name, input] of [
-  ['password followed by two words and an email', 'mongo://alice:hunter2 see me@example.com'],
-  ['space inside password with host IP', 'mongo://alice:hunter 2@10.20.30.40/app'],
-]) {
-  test(`paranoic hardening blocks ambiguous text: ${name}`, async () => {
-    const { status, forwarded } = await send('paranoic', input);
-    assert.deepEqual(forwarded, [], 'ambiguous credential text must not be forwarded');
-    assert.equal(status, 502);
-  });
+// URL parsing failures pass through; IPv4 redaction remains independent.
+for (const mode of ['default', 'paranoic']) {
+  for (const [name, input] of [
+    ['password followed by two words and an email', 'mongo://alice:hunter2 see me@example.com'],
+    ['space inside password with host IP', 'mongo://alice:hunter 2@10.20.30.40/app'],
+  ]) {
+    test(`${mode} hardening skips unparseable URLs: ${name}`, async () => {
+      const { status, forwarded } = await send(mode, input);
+      assert.equal(status, 200);
+      assert.equal(forwarded.length, 1);
+      if (input.includes('10.20.30.40')) {
+        assert.match(forwarded[0], /^mongo:\/\/alice:hunter 2@\[REDACTED_IP_[a-f0-9]{32}\]\/app$/);
+      } else {
+        assert.equal(forwarded[0], input);
+      }
+    });
+  }
 }

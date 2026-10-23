@@ -94,8 +94,9 @@ main() {
   command -v sha256sum >/dev/null || command -v shasum >/dev/null || fail 'A SHA-256 checksum tool is required.'
   docker info >/dev/null 2>&1 || fail 'Start Docker, then run setup again.'
   local auth_summary
-  auth_summary=$(opencode auth list --pure 2>&1) || fail 'Cannot inspect OpenCode login. Existing credentials were not changed.'
-  printf '%s\n' "$auth_summary" | grep -Eiq 'OpenAI.*oauth' || fail 'Sign in first: opencode auth login --provider openai --pure'
+  auth_summary=$(opencode auth list 2>&1) || fail 'Cannot inspect OpenCode login. Existing credentials were not changed.'
+  # Some versions show only "stored"; the plugin validates the OAuth type.
+  printf '%s\n' "$auth_summary" | grep -Eiq 'OpenAI.*(oauth|stored)' || fail 'Sign in first: opencode auth login (select OpenAI OAuth)'
 
   if [[ ! -e $receipt ]]; then
     (umask 077; mkdir "$receipt")
@@ -150,7 +151,10 @@ main() {
     chmod 644 "$project/opencode.jsonc"
   fi
   local models
-  models=$(opencode models openai 2>/dev/null) || fail 'OpenCode could not load OpenAI models. Project changes will be rolled back.'
+  if ! models=$(opencode models); then
+    printf '%s\n' "$models" >&2
+    fail 'OpenCode could not load OpenAI models. Project changes will be rolled back.'
+  fi
   printf '%s\n' "$models" | grep -q '^openai/' || fail 'Your existing configuration disables OpenAI models. Enable OpenAI before running setup again.'
   completed=1
   printf 'Ready. Restart OpenCode in this project and select an OpenAI model with /models.\n'

@@ -1,3 +1,14 @@
+export class RedactionCandidateSizeError extends Error {
+  constructor(candidate, length, limit, type, unit = 'chars') {
+    super('Redaction candidate exceeds configured limit');
+    this.candidateLength = length;
+    this.candidateLimit = limit;
+    this.candidateType = type;
+    this.candidateUnit = unit;
+    this.candidatePreview = candidate.slice(0, 32);
+  }
+}
+
 export const DEFAULT_REDACTION_LIMITS = Object.freeze({
   maxApiTokenChars: 4096,
   maxJwtChars: 16384,

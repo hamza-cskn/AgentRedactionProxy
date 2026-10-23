@@ -1,6 +1,6 @@
 import { redactUrlPasswords } from './url-credentials.mjs';
 import { transformJsonText } from './json-text.mjs';
-import { resolveRedactionLimits } from './redaction-limits.mjs';
+import { RedactionCandidateSizeError, resolveRedactionLimits } from './redaction-limits.mjs';
 
 // These are intentionally narrow. Generic long strings, UUIDs, and timestamps
 // are useful agent context, not reliable evidence of a credential.
@@ -35,8 +35,8 @@ const WEB_TOKEN = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]+={0,2}(?:\.[A-Za-z0-9_-]*={0,
 const BASE64_RUN = /[A-Za-z0-9+/_-]+={0,2}/g;
 const FILENAME_SUFFIX = /^\.(?:[a-z]{3}|yaml|jpeg|json|html|toml|conf|js|ts|py|go|rs|sh|c|h)(?=$|[\s"'`)\]},;])/i;
 
-function checkSize(size, maximum) {
-  if (size > maximum) throw new Error('Redaction candidate exceeds configured limit');
+function checkSize(candidate, size, maximum, type, unit) {
+  if (size > maximum) throw new RedactionCandidateSizeError(candidate, size, maximum, type, unit);
 }
 
 function checkJwtCandidate(token, limits) {
@@ -51,16 +51,16 @@ function checkJwtCandidate(token, limits) {
     break;
   }
   // All-whitespace samples are uncertain, not an exemption for padded headers.
-  checkSize(token.length, limits.maxJwtChars);
-  checkSize(Math.floor(header.length * 3 / 4), limits.maxJwtHeaderBytes);
+  checkSize(token, token.length, limits.maxJwtChars, 'jwt');
+  checkSize(header, Math.floor(header.length * 3 / 4), limits.maxJwtHeaderBytes, 'jwt-header', 'bytes');
   return true;
 }
 
 function checkCandidateSizes(value, limits) {
   // Size guards are not credential classifiers. Check before any replacement
   // can hide an oversized candidate; never decode arbitrary base64 blobs.
-  for (const [blob] of value.matchAll(BASE64_RUN)) checkSize(blob.length, limits.maxBase64Chars);
-  for (const [token] of value.matchAll(API_KEY)) checkSize(token.length, limits.maxApiTokenChars);
+  for (const [blob] of value.matchAll(BASE64_RUN)) checkSize(blob, blob.length, limits.maxBase64Chars, 'base64');
+  for (const [token] of value.matchAll(API_KEY)) checkSize(token, token.length, limits.maxApiTokenChars, 'api-token');
   for (const [token] of value.matchAll(WEB_TOKEN)) checkJwtCandidate(token, limits);
 }
 
@@ -136,7 +136,32 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic', repla
 
 const permanentMarker = (type) => type === 'PASSWORD' ? 'REDACTED_PASSWORD' : `[REDACTED_${type}]`;
 
+function isResponseImageData(value, path, parent) {
+  return path.length === 5 && path[0] === 'input' && Number.isInteger(path[1])
+    && path[2] === 'content' && Number.isInteger(path[3]) && path[4] === 'image_url'
+    && parent?.type === 'input_image'
+    && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
+// Anthropic Messages image block, top-level or inside a tool_result:
+// messages[i].content[j](.content[k]).source.data
+function isMessagesImageData(value, path, parent, root) {
+  if (path[0] !== 'messages' || !Number.isInteger(path[1]) || path[2] !== 'content' || !Number.isInteger(path[3])) return false;
+  let block = root.messages[path[1]]?.content?.[path[3]];
+  if (path.length === 8) {
+    if (block?.type !== 'tool_result' || path[4] !== 'content' || !Number.isInteger(path[5])) return false;
+    block = block.content?.[path[5]];
+  } else if (path.length !== 6) {
+    return false;
+  }
+  return path.at(-2) === 'source' && path.at(-1) === 'data'
+    && block?.type === 'image' && block.source === parent
+    && parent?.type === 'base64' && /^image\/(?:png|jpeg|gif|webp)$/.test(parent.media_type)
+    && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
 export function redactSecrets(text, redactionLimits, mode = 'paranoic', replace = permanentMarker) {
   const limits = resolveRedactionLimits(redactionLimits);
-  return transformJsonText(text, (value) => redactValue(value, limits, false, mode, replace));
+  return transformJsonText(text, (value) => redactValue(value, limits, false, mode, replace),
+    (...args) => isResponseImageData(...args) || isMessagesImageData(...args));
 }

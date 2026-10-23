@@ -60,9 +60,10 @@ test('redacts URL passwords across schemes while preserving connection structure
   assert.equal(result.body.includes('postgres://db.example/app'), true);
 });
 
-test('rejects ambiguous credential-shaped URLs rather than forwarding a possible password', () => {
-  assert.throws(() => redactSecrets('mongdb://user:pass word@host'), /Unsafe credential URL/);
-  assert.throws(() => redactSecrets(`mongdb://user:${'x'.repeat(600)}@host`), /Unsafe credential URL/);
+test('skips ambiguous credential-shaped URLs', () => {
+  assert.deepEqual(redactSecrets('mongdb://user:pass word@host'), { body: 'mongdb://user:pass word@host', count: 0 });
+  const longUrl = `mongdb://user:${'x'.repeat(600)}@host`;
+  assert.deepEqual(redactSecrets(longUrl), { body: longUrl, count: 0 });
   assert.equal(redactSecrets('https://example.com:8443/path').body, 'https://example.com:8443/path');
   const prose = `See https://example.com ${'word '.repeat(200)}`;
   assert.equal(redactSecrets(prose).body, prose);
@@ -235,9 +236,8 @@ for (const [name, input] of unchangedTexts) {
   });
 }
 
-// A rejected request is preferable to guessing a credential boundary and
-// forwarding a suffix. These tests must stay failing until that is enforced.
-const unsafeTexts = [
+// URL parse failures are skipped; private-key failures still reject requests.
+const unparseableUrls = [
   ['space inside password', 'mongo://alice:secret word@host.example'],
   ['several words inside password', 'mongo://alice:several secret words here@host.example'],
   ['space inside username', 'mongo://alice smith:secret@host.example'],
@@ -249,6 +249,15 @@ const unsafeTexts = [
   ['overlong password', `mongo://alice:${'x'.repeat(600)}@host.example`],
   ['missing at-sign', 'mongo://alice:secret'],
   ['missing scheme slash', 'mongdb:/alice:secret@host.example'],
+];
+
+for (const [name, input] of unparseableUrls) {
+  test(`unparseable URL is unchanged: ${name}`, () => {
+    assert.deepEqual(redactSecrets(input), { body: input, count: 0 });
+  });
+}
+
+const unsafeTexts = [
   ['unterminated PEM', '-----BEGIN PRIVATE KEY-----\nQUJDREVGRw=='],
   ['mismatched PEM footer', '-----BEGIN RSA PRIVATE KEY-----\nQUJDREVGRw==\n-----END EC PRIVATE KEY-----'],
 ];
@@ -303,14 +312,14 @@ test('JSON text: escaped URL delimiters', () => {
   });
 });
 
-test('JSON text: nested malformed credentials must not bypass rejection', () => {
+test('JSON text: nested unparseable URLs remain unchanged', () => {
   const input = JSON.stringify({ arguments: JSON.stringify({ url: 'mongo://alice:secret word@host.example' }) });
-  assert.throws(() => redactSecrets(input), /Unsafe credential URL/);
+  assert.deepEqual(redactSecrets(input), { body: input, count: 0 });
 });
 
-test('secret text: a rejection does not contaminate subsequent calls', () => {
+test('secret text: a skipped URL does not affect subsequent calls', () => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    assert.throws(() => redactSecrets('mongo://alice:secret word@host.example'), /Unsafe credential URL/);
+    assert.deepEqual(redactSecrets('mongo://alice:secret word@host.example'), { body: 'mongo://alice:secret word@host.example', count: 0 });
     assert.deepEqual(redactSecrets(github), { body: apiMarker, count: 1 });
     assert.deepEqual(redactSecrets('ordinary text'), { body: 'ordinary text', count: 0 });
   }

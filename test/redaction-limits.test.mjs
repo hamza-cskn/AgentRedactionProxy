@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 import { loadConfig } from '../src/config.mjs';
 import { createProxy } from '../src/proxy.mjs';
+import { errorDiagnostics } from '../src/proxy-logging.mjs';
 import { DEFAULT_REDACTION_LIMITS, resolveRedactionLimits } from '../src/redaction-limits.mjs';
 import { redactSecrets } from '../src/secret-redaction.mjs';
 
@@ -54,12 +55,29 @@ for (const [name, limit, make, marker] of cases) {
         await proxy.listeners('request')[0](request, response);
         assert.equal(response.statusCode, 502);
         assert.equal(response.body.includes(make(limit + 1)), false);
+        const candidate = name === 'maxJwtHeaderBytes' ? make(limit + 1).split('.')[0] : make(limit + 1);
+        assert.deepEqual(JSON.parse(logs.at(-1)).error, {
+          name: 'Error', reason: 'redaction-candidate-too-large',
+          candidateLength: name === 'maxJwtHeaderBytes' ? Math.floor(candidate.length * 3 / 4) : candidate.length,
+          candidateLimit: limit,
+          candidateType: { maxApiTokenChars: 'api-token', maxJwtChars: 'jwt', maxJwtHeaderBytes: 'jwt-header', maxBase64Chars: 'base64' }[name],
+          candidateUnit: name === 'maxJwtHeaderBytes' ? 'bytes' : 'chars',
+          candidatePreview: candidate.slice(0, 32),
+        });
       }
       assert.equal(forwarded, false);
       assert.equal(logs.join('').includes(make(limit + 1)), false);
     });
   }
 }
+
+test('arbitrary errors cannot inject candidate previews into diagnostics', () => {
+  const error = Object.assign(new Error('Redaction candidate exceeds configured limit'), {
+    candidateLength: 65537, candidateLimit: 65536, candidateType: 'base64',
+    candidateUnit: 'chars', candidatePreview: 'request-secret',
+  });
+  assert.deepEqual(errorDiagnostics(error), { name: 'Error', reason: 'redaction-candidate-too-large' });
+});
 
 test('base64 size guard covers standard and URL-safe alphabets, padding, data URLs and JSON escapes', () => {
   for (const blob of ['+/AB'.repeat(17), '-_AB'.repeat(17), `${'A'.repeat(63)}==`]) {
