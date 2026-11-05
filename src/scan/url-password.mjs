@@ -131,19 +131,17 @@ function passwordSpan(text, match) {
   return { start, end: candidate.end };
 }
 
-export function redactUrlPasswords(text, replace) {
-  let body = '';
+export function urlPasswordSpans(text) {
+  const spans = [];
   let cursor = 0;
-  let count = 0;
   for (const match of text.matchAll(URL_SCHEME)) {
     // Ordinary relative paths are not scheme-less credential URLs.
     if (match[2].replace(/[ \t]/g, '') === '/') continue;
     if (match.index + match[0].length < cursor) continue;
     const span = passwordSpan(text, match);
     if (!span) continue;
-    body += text.slice(cursor, span.start) + replace('PASSWORD', text.slice(span.start, span.end));
+    spans.push({ ...span, type: 'PASSWORD' });
     cursor = span.end;
-    count += 1;
   }
-  return { body: body + text.slice(cursor), count };
+  return spans;
 }

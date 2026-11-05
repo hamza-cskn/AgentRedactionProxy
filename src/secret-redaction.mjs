@@ -1,7 +1,7 @@
-import { redactUrlPasswords } from './url-credentials.mjs';
+import { urlPasswordSpans } from './scan/url-password.mjs';
 import { transformJsonText } from './scan/traverse.mjs';
 import { privateKeySpans } from './scan/private-key.mjs';
-import { applySpans } from './scan/spans.mjs';
+import { applySpans, resolveSpans } from './scan/spans.mjs';
 import { RedactionCandidateSizeError, resolveRedactionLimits } from './redaction-limits.mjs';
 
 // These are intentionally narrow. Generic long strings, UUIDs, and timestamps
@@ -107,9 +107,10 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic', repla
     count += 1;
     return replace(type, secret);
   };
-  let body = applySpans(value, privateKeySpans(value), redact);
-  checkEncodedUrls(body, limits, decodedUrl, mode);
-  body = redactUrlPasswords(body, redact).body;
+  const keys = privateKeySpans(value);
+  // Encoded URLs inside a private key are redacted with it, not inspected.
+  checkEncodedUrls(applySpans(value, keys, permanentMarker), limits, decodedUrl, mode);
+  let body = applySpans(value, resolveSpans([...keys, ...urlPasswordSpans(value)]), redact);
   body = body.replace(API_KEY, (token, offset, input) => {
     return isFilenameToken(token, input.slice(offset + token.length), mode) ? token : redact('API_KEY', token);
   });
