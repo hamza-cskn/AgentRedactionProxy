@@ -194,7 +194,7 @@ test('port notation is never a userinfo-password exemption', () => {
         `${scheme}:/alice:${password}@host/api`,
         ...(password === '8080' ? [] : [`${scheme}://alice:${password} more@host/api`]),
       ]) {
-        assert.throws(() => redactSecrets(malformed), /Unsafe credential URL/, malformed);
+        assert.deepEqual(redactSecrets(malformed), { body: malformed, count: 0 }, malformed);
       }
     }
   }
@@ -256,8 +256,8 @@ for (const input of [
   'http://alice:secret https://other.example/path',
   'mongodb://alice:27017,db2.example:27017 word@host/app',
 ]) {
-  test(`false-positive fixes still reject malformed credentials: ${input}`, () => {
-    assert.throws(() => redactSecrets(input), /Unsafe credential URL/);
+  test(`unparseable credential-like text is skipped: ${input}`, () => {
+    assert.deepEqual(redactSecrets(input), { body: input, count: 0 });
   });
 }
 

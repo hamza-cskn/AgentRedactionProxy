@@ -29,7 +29,13 @@ if(name==='curl') {
   done();
 }
 if(name==='opencode') {
-  if(args[0]==='auth') done(process.env.ARP_TEST_NO_AUTH?'OpenAI api':'OpenAI oauth');
+  if(args.includes('--pure')) done('error: unknown option --pure',1);
+  if(args[0]==='auth') done(process.env.ARP_TEST_AUTH_OUTPUT ?? (process.env.ARP_TEST_NO_AUTH?'OpenAI api':'OpenAI oauth'));
+  if(args[0]==='models' && args.length > 1) done('Unexpected positional argument: "'+args[1]+'"',1);
+  if(process.env.ARP_TEST_MODELS_FAIL) {
+    fs.writeSync(2,'Model loader diagnostic on stderr\\n');
+    done('Model loader diagnostic on stdout\\n',1);
+  }
   done(process.env.ARP_TEST_NO_MODELS?'':'openai/test-model\\n');
 }
 if(name==='docker') {
@@ -106,6 +112,18 @@ test('setup installs and uninstalls project files while preserving shared contai
   assert.match((await f.run('uninstall')).stdout, /Nothing changed/);
 });
 
+test('setup accepts OpenCode auth output that labels credentials as stored', async (t) => {
+  const f = await fixture(t, { ARP_TEST_AUTH_OUTPUT: 'OpenAI  OpenAI                      stored\n' });
+  assert.match((await f.run()).stdout, /Ready/);
+});
+
+test('setup rejects stored credentials for another provider', async (t) => {
+  const f = await fixture(t, { ARP_TEST_AUTH_OUTPUT: 'Anthropic  Anthropic                stored\n' });
+  await assert.rejects(f.run(), (error) => /Sign in first/.test(error.stderr));
+  assert.equal((await f.state()).container, null);
+  assert.deepEqual(await readdir(f.project), []);
+});
+
 test('repeat setup reuses the shared proxy and preserves existing JSONC byte-for-byte', async (t) => {
   const f = await fixture(t);
   const original = '{ // keep comments\n "provider": {},\n}\n';
@@ -163,6 +181,18 @@ for (const failure of ['ARP_TEST_PULL_FAIL', 'ARP_TEST_DOWNLOAD_FAIL', 'ARP_TEST
     assert.deepEqual(await readdir(f.project), []);
   });
 }
+
+test('model command failure exposes diagnostics and rolls back setup', async (t) => {
+  const f = await fixture(t, { ARP_TEST_MODELS_FAIL: '1' });
+  await assert.rejects(f.run(), (error) => {
+    assert.match(error.stderr, /Model loader diagnostic on stderr/);
+    assert.match(error.stderr, /Model loader diagnostic on stdout/);
+    assert.match(error.stderr, /OpenCode could not load OpenAI models/);
+    return true;
+  });
+  assert.equal((await f.state()).container, null);
+  assert.deepEqual(await readdir(f.project), []);
+});
 
 test('unmanaged Docker container and same-name race remain untouched', async (t) => {
   for (const race of [false, true]) {

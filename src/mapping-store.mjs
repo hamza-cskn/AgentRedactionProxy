@@ -22,7 +22,8 @@ const OCTET = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
 const IPV4_PATTERN = new RegExp(`(^|[^0-9.]|(?<![0-9])\\.)(${OCTET}(?:\\.${OCTET}){3})(?!\\.?[0-9])`, 'g');
 const AWS_IPV4_PATTERN = new RegExp(`\\b(ip-)(${OCTET}(?:-${OCTET}){3})(?=\\.(?:ec2|[a-z0-9-]+\\.compute)\\.internal\\b)`, 'gi');
 const STATE_VERSION = 3;
-const IP_MARKER = new RegExp(RESTORABLE_MARKER_SOURCE, 'g');
+const RESTORABLE_MARKER = new RegExp(RESTORABLE_MARKER_SOURCE, 'g');
+const EXACT_MARKER = new RegExp(`^${RESTORABLE_MARKER_SOURCE}$`);
 const EXACT_IP_MARKER = /^\[REDACTED_IP_[a-f0-9]{32}\]$/;
 const SECRET_TYPES = new Set(['API_KEY', 'JWT', 'PRIVATE_KEY', 'PASSWORD', 'TEXT']);
 const SECRET_CAPACITY = 10000;
@@ -73,10 +74,15 @@ export function validateState(state) {
   ) {
     throw new Error('Invalid mapping state');
   }
+  if (state.mappings.length !== state.nextIndex) throw new Error('Invalid mapping state');
+  const fakeValues = validateIpMappings(state);
+  if (state.version === STATE_VERSION) validateSecretMappings(state.secretMappings, fakeValues);
+}
 
+function validateIpMappings(state) {
   const realValues = new Set();
   const fakeValues = new Set();
-  for (const mapping of state.mappings) {
+  for (const [index, mapping] of state.mappings.entries()) {
     if (
       !mapping
       || typeof mapping.real !== 'string'
@@ -91,29 +97,28 @@ export function validateState(state) {
     }
     realValues.add(mapping.real);
     fakeValues.add(mapping.fake);
-  }
-
-  if (state.mappings.length !== state.nextIndex) {
-    throw new Error('Invalid mapping state');
-  }
-  for (let index = 0; index < state.mappings.length; index += 1) {
-    const mapping = state.mappings[index];
-    if (state.version === 1 ? mapping.fake !== fakeAddressAt(index)
-      : !EXACT_IP_MARKER.test(mapping.fake)
-        || (mapping.legacyFake !== undefined && mapping.legacyFake !== fakeAddressAt(index))) {
+    const expectedLegacy = fakeAddressAt(index);
+    if (state.version === 1) {
+      if (mapping.fake !== expectedLegacy) throw new Error('Invalid mapping state');
+    } else if (!EXACT_IP_MARKER.test(mapping.fake)
+      || (mapping.legacyFake !== undefined && mapping.legacyFake !== expectedLegacy)) {
       throw new Error('Invalid mapping state');
     }
   }
-  if (state.version === STATE_VERSION) {
-    if (!Array.isArray(state.secretMappings) || state.secretMappings.length > SECRET_CAPACITY) throw new Error('Invalid mapping state');
-    const seen = new Set();
-    for (const mapping of state.secretMappings) {
-      if (!mapping || !SECRET_TYPES.has(mapping.type) || typeof mapping.real !== 'string' || mapping.real === ''
-        || typeof mapping.fake !== 'string' || !new RegExp(`^\\[REDACTED_${mapping.type}_[a-f0-9]{32}\\]$`).test(mapping.fake)
-        || fakeValues.has(mapping.fake) || seen.has(JSON.stringify([mapping.type, mapping.real]))) throw new Error('Invalid mapping state');
-      fakeValues.add(mapping.fake);
-      seen.add(JSON.stringify([mapping.type, mapping.real]));
+  return fakeValues;
+}
+
+function validateSecretMappings(mappings, fakeValues) {
+  if (!Array.isArray(mappings) || mappings.length > SECRET_CAPACITY) throw new Error('Invalid mapping state');
+  const seen = new Set();
+  for (const mapping of mappings) {
+    if (!mapping || !SECRET_TYPES.has(mapping.type) || typeof mapping.real !== 'string' || mapping.real === ''
+      || typeof mapping.fake !== 'string' || !new RegExp(`^\\[REDACTED_${mapping.type}_[a-f0-9]{32}\\]$`).test(mapping.fake)
+      || fakeValues.has(mapping.fake) || seen.has(JSON.stringify([mapping.type, mapping.real]))) {
+      throw new Error('Invalid mapping state');
     }
+    fakeValues.add(mapping.fake);
+    seen.add(JSON.stringify([mapping.type, mapping.real]));
   }
 }
 
@@ -306,6 +311,61 @@ export class MappingStore {
     }
   }
 
+  #allocateSecret(type, real) {
+    if (this.fakeToReal.has(real) && EXACT_MARKER.test(real)) return real;
+    real = real.replace(RESTORABLE_MARKER, (marker) => this.fakeToReal.get(marker) ?? marker);
+    const key = JSON.stringify([type, real]);
+    if (this.secretToFake.has(key)) return this.secretToFake.get(key);
+    if (this.state.secretMappings.length >= SECRET_CAPACITY) {
+      throw Object.assign(new Error('Sensitive text mapping capacity exhausted'), { code: 'SECRET_MAPPING_CAPACITY_EXHAUSTED' });
+    }
+    let fake;
+    do { fake = newMarker(type); } while (this.fakeToReal.has(fake));
+    this.state.secretMappings.push({ type, real, fake });
+    this.secretToFake.set(key, fake);
+    this.fakeToReal.set(fake, real);
+    return fake;
+  }
+
+  #allocateIp(ip) {
+    if (isDocumentationAddress(ip)) return ip;
+    if (this.realToFake.has(ip)) return this.realToFake.get(ip);
+    if (this.state.nextIndex >= POOL_SIZE) throw new MappingCapacityError();
+    let fake;
+    do { fake = newMarker(); } while (this.fakeToReal.has(fake));
+    this.state.mappings.push({ real: ip, fake });
+    this.state.nextIndex += 1;
+    this.realToFake.set(ip, fake);
+    this.fakeToReal.set(fake, ip);
+    return fake;
+  }
+
+  #sensitiveTextPatterns(redactionLimits, mode) {
+    // Match whole configured phrases even when an overlapping built-in
+    // credential has already been replaced with its marker.
+    return this.sensitiveTexts.flatMap((value) => {
+      try {
+        const matched = redactSecrets(value, redactionLimits, mode, (type, real) => (
+          this.secretToFake.get(JSON.stringify([type, real])) ?? real
+        )).body;
+        return matched === value ? [value] : [matched, value];
+      } catch {
+        // Malformed configured literals must not reject unrelated requests.
+        return [value];
+      }
+    });
+  }
+
+  #redactRequest(text, redactionLimits, mode) {
+    const secrets = redactSecrets(text, redactionLimits, mode, (type, real) => this.#allocateSecret(type, real));
+    const patterns = this.#sensitiveTextPatterns(redactionLimits, mode);
+    const custom = replaceSensitiveTexts(secrets.body, patterns, (value) => {
+      const real = value.replace(RESTORABLE_MARKER, (marker) => this.fakeToReal.get(marker) ?? marker);
+      return this.#allocateSecret('TEXT', real);
+    });
+    return { body: custom.body, count: secrets.count + custom.count };
+  }
+
   async #obfuscateLocked(text, { maxBytes = Number.POSITIVE_INFINITY, redact = false, mode = 'paranoic', redactionLimits } = {}) {
     const originalState = this.state;
     const migrating = this.state.version !== STATE_VERSION;
@@ -319,64 +379,21 @@ export class MappingStore {
     const originalLength = this.state.mappings.length;
     const originalNextIndex = this.state.nextIndex;
     const originalSecretLength = this.state.secretMappings.length;
-    const newMappings = [];
-
     try {
       let secretCount = 0;
-      const allocateSecret = (type, real) => {
-        if (this.fakeToReal.has(real) && new RegExp(`^${RESTORABLE_MARKER_SOURCE}$`).test(real)) return real;
-        real = real.replace(IP_MARKER, (marker) => this.fakeToReal.get(marker) ?? marker);
-        const key = JSON.stringify([type, real]);
-        if (this.secretToFake.has(key)) return this.secretToFake.get(key);
-        if (this.state.secretMappings.length >= SECRET_CAPACITY) throw Object.assign(new Error('Sensitive text mapping capacity exhausted'), { code: 'SECRET_MAPPING_CAPACITY_EXHAUSTED' });
-        let fake;
-        do { fake = newMarker(type); } while (this.fakeToReal.has(fake));
-        this.state.secretMappings.push({ type, real, fake });
-        this.secretToFake.set(key, fake);
-        this.fakeToReal.set(fake, real);
-        return fake;
-      };
       if (redact) {
-        const secrets = redactSecrets(text, redactionLimits, mode, allocateSecret);
+        const secrets = this.#redactRequest(text, redactionLimits, mode);
         text = secrets.body;
         secretCount = secrets.count;
-        // Expand known secret spans in configured values into their markers so
-        // whole literal phrases still match when they overlap a built-in key.
-        const patterns = this.sensitiveTexts.flatMap((value) => {
-          try {
-            const matched = redactSecrets(value, redactionLimits, mode, (type, real) => (
-              this.secretToFake.get(JSON.stringify([type, real])) ?? real
-            )).body;
-            return matched === value ? [value] : [matched, value];
-          } catch {
-            // A malformed-looking configured literal must not reject unrelated
-            // requests. The actual request already passed credential checks.
-            return [value];
-          }
-        });
-        const custom = replaceSensitiveTexts(text, patterns, (value) => allocateSecret('TEXT', value.replace(IP_MARKER, (marker) => this.fakeToReal.get(marker) ?? marker)));
-        text = custom.body;
-        secretCount += custom.count;
       }
-      const transformed = transformJsonText(text, (value) => replaceAddresses(value, (ip) => {
-        if (isDocumentationAddress(ip)) return ip;
-        if (this.realToFake.has(ip)) return this.realToFake.get(ip);
-        if (this.state.nextIndex >= POOL_SIZE) throw new MappingCapacityError();
-        let fake;
-        do { fake = newMarker(); } while (this.fakeToReal.has(fake));
-        const mapping = { real: ip, fake };
-        this.state.mappings.push(mapping);
-        this.state.nextIndex += 1;
-        this.realToFake.set(ip, fake);
-        this.fakeToReal.set(fake, ip);
-        newMappings.push(mapping);
-        return fake;
-      }));
+      const transformed = transformJsonText(text, (value) => replaceAddresses(value, (ip) => this.#allocateIp(ip)));
 
       if (Buffer.byteLength(transformed.body, 'utf8') > maxBytes) {
         throw new TransformedBodyLimitError();
       }
-      if (migrating || newMappings.length > 0 || this.state.secretMappings.length !== originalSecretLength) await saveState(this.statePath, this.state, this.encryptionKey);
+      const changed = migrating || this.state.mappings.length !== originalLength
+        || this.state.secretMappings.length !== originalSecretLength;
+      if (changed) await saveState(this.statePath, this.state, this.encryptionKey);
       // Also retry durability for existing mappings after a previous sync failure.
       await syncStateDirectory(this.statePath);
       return redact ? { ...transformed, secretCount } : transformed;
@@ -385,15 +402,8 @@ export class MappingStore {
       if (error.code === 'MAPPING_DURABILITY_FAILED') throw error;
       this.state.mappings.length = originalLength;
       this.state.nextIndex = originalNextIndex;
-      for (const mapping of newMappings) {
-        this.realToFake.delete(mapping.real);
-        this.fakeToReal.delete(mapping.fake);
-      }
-      if (migrating) this.#applyState(originalState);
-      else {
-        this.state.secretMappings.length = originalSecretLength;
-        this.#applyState(this.state);
-      }
+      this.state.secretMappings.length = originalSecretLength;
+      this.#applyState(migrating ? originalState : this.state);
       throw error;
     }
   }
@@ -402,25 +412,27 @@ export class MappingStore {
     return this.deobfuscateMany([text]).then(([result]) => result);
   }
 
+  #restoreValue(value) {
+    const legacy = replaceAddresses(value, (ip) => this.fakeToReal.get(ip));
+    let count = legacy.count;
+    const body = legacy.body.replace(RESTORABLE_MARKER, (marker, offset, input) => {
+      const real = this.fakeToReal.get(marker);
+      if (!real) return marker;
+      count += 1;
+      const aws = marker.startsWith('[REDACTED_IP_') && /\bip-$/i.test(input.slice(0, offset))
+        && /^\.(?:ec2|[a-z0-9-]+\.compute)\.internal\b/i.test(input.slice(offset + marker.length));
+      return aws ? real.replaceAll('.', '-') : real;
+    });
+    return { body, count };
+  }
+
   deobfuscateMany(texts) {
     const operation = this.queue.then(async () => {
       const release = await acquireLock(this.lockPath);
       try {
         await this.storageGuard?.();
         this.#applyState(await readState(this.statePath, this.encryptionKey));
-        return texts.map((text) => transformJsonText(text, (value) => {
-          const legacy = replaceAddresses(value, (ip) => this.fakeToReal.get(ip));
-          let count = legacy.count;
-          const body = legacy.body.replace(IP_MARKER, (marker, offset, input) => {
-            const real = this.fakeToReal.get(marker);
-            if (!real) return marker;
-            count += 1;
-            const aws = marker.startsWith('[REDACTED_IP_') && /\bip-$/i.test(input.slice(0, offset))
-              && /^\.(?:ec2|[a-z0-9-]+\.compute)\.internal\b/i.test(input.slice(offset + marker.length));
-            return aws ? real.replaceAll('.', '-') : real;
-          });
-          return { body, count };
-        }));
+        return texts.map((text) => transformJsonText(text, (value) => this.#restoreValue(value)));
       } finally {
         await release();
       }
