@@ -160,8 +160,21 @@ function isMessagesImageData(value, path, parent, root) {
     && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
 
+// Anthropic Messages opaque reasoning: messages[i].content[j].signature on a
+// thinking block, or .data on a redacted_thinking block. Encrypted by the API
+// and rejected if modified; the readable thinking text is still redacted.
+function isMessagesThinkingBlob(value, path, parent, root) {
+  if (path.length !== 5 || path[0] !== 'messages' || !Number.isInteger(path[1])
+    || path[2] !== 'content' || !Number.isInteger(path[3])) return false;
+  const block = root.messages[path[1]]?.content?.[path[3]];
+  return block === parent
+    && ((block?.type === 'thinking' && path[4] === 'signature')
+      || (block?.type === 'redacted_thinking' && path[4] === 'data'))
+    && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+}
+
 export function redactSecrets(text, redactionLimits, mode = 'paranoic', replace = permanentMarker) {
   const limits = resolveRedactionLimits(redactionLimits);
   return transformJsonText(text, (value) => redactValue(value, limits, false, mode, replace),
-    (...args) => isResponseImageData(...args) || isMessagesImageData(...args));
+    (...args) => isResponseImageData(...args) || isMessagesImageData(...args) || isMessagesThinkingBlob(...args));
 }
