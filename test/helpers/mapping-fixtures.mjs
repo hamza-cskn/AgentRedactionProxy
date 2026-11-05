@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { MappingStore } from '../../src/mapping-store.mjs';
-import { transformJsonText } from '../../src/json-text.mjs';
+import { transformJsonText } from '../../src/scan/traverse.mjs';
 
 // Existing golden text uses numbered documentation addresses as allocation
 // references. Resolve EXPECTATIONS only to the actual random markers; never

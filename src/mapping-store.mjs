@@ -3,7 +3,7 @@ import { chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { transformJsonText } from './json-text.mjs';
+import { transformJsonText } from './scan/traverse.mjs';
 import { redactSecrets } from './secret-redaction.mjs';
 import { RESTORABLE_MARKER_SOURCE, replaceSensitiveTexts, validateSensitiveTexts } from './sensitive-texts.mjs';
 import { decryptText, encryptText } from './encrypted-storage.mjs';

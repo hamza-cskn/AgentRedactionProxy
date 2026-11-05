@@ -1,5 +1,5 @@
 import { open } from 'node:fs/promises';
-import { transformJsonText } from './json-text.mjs';
+import { transformJsonText } from './scan/traverse.mjs';
 import { decryptText } from './encrypted-storage.mjs';
 
 export const RESTORABLE_MARKER_SOURCE = '\\[REDACTED_(?:IP|TEXT|API_KEY|JWT|PRIVATE_KEY|PASSWORD)_[a-f0-9]{32}\\]';

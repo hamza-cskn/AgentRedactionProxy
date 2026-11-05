@@ -1,5 +1,5 @@
 import { redactUrlPasswords } from './url-credentials.mjs';
-import { transformJsonText } from './json-text.mjs';
+import { transformJsonText } from './scan/traverse.mjs';
 import { RedactionCandidateSizeError, resolveRedactionLimits } from './redaction-limits.mjs';
 
 // These are intentionally narrow. Generic long strings, UUIDs, and timestamps
@@ -143,52 +143,7 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic', repla
 
 const permanentMarker = (type) => type === 'PASSWORD' ? 'REDACTED_PASSWORD' : `[REDACTED_${type}]`;
 
-function isResponseImageData(value, path, parent) {
-  return path.length === 5 && path[0] === 'input' && Number.isInteger(path[1])
-    && path[2] === 'content' && Number.isInteger(path[3]) && path[4] === 'image_url'
-    && parent?.type === 'input_image'
-    && /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
-}
-
-// Anthropic Messages image block, top-level or inside a tool_result:
-// messages[i].content[j](.content[k]).source.data
-function isMessagesImageData(value, path, parent, root) {
-  if (path[0] !== 'messages' || !Number.isInteger(path[1]) || path[2] !== 'content' || !Number.isInteger(path[3])) return false;
-  let block = root.messages[path[1]]?.content?.[path[3]];
-  if (path.length === 8) {
-    if (block?.type !== 'tool_result' || path[4] !== 'content' || !Number.isInteger(path[5])) return false;
-    block = block.content?.[path[5]];
-  } else if (path.length !== 6) {
-    return false;
-  }
-  return path.at(-2) === 'source' && path.at(-1) === 'data'
-    && block?.type === 'image' && block.source === parent
-    && parent?.type === 'base64' && /^image\/(?:png|jpeg|gif|webp)$/.test(parent.media_type)
-    && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
-}
-
-// Anthropic Messages opaque reasoning: messages[i].content[j].signature on a
-// thinking block, or .data on a redacted_thinking block. Encrypted by the API
-// and rejected if modified; the readable thinking text is still redacted.
-function isMessagesThinkingBlob(value, path, parent, root) {
-  if (path.length !== 5 || path[0] !== 'messages' || !Number.isInteger(path[1])
-    || path[2] !== 'content' || !Number.isInteger(path[3])) return false;
-  const block = root.messages[path[1]]?.content?.[path[3]];
-  return block === parent
-    && ((block?.type === 'thinking' && path[4] === 'signature')
-      || (block?.type === 'redacted_thinking' && path[4] === 'data'))
-    && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
-}
-
-// Opaque base64 payloads the upstream API decodes or verifies; rewriting them breaks the request.
-function isOpaquePayload(value, path, parent, root) {
-  return isResponseImageData(value, path, parent)
-    || isMessagesImageData(value, path, parent, root)
-    || isMessagesThinkingBlob(value, path, parent, root);
-}
-
 export function redactSecrets(text, redactionLimits, mode = 'paranoic', replace = permanentMarker) {
   const limits = resolveRedactionLimits(redactionLimits);
-  const redact = (value) => redactValue(value, limits, false, mode, replace);
-  return transformJsonText(text, redact, isOpaquePayload);
+  return transformJsonText(text, (value) => redactValue(value, limits, false, mode, replace));
 }
