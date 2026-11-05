@@ -13,6 +13,7 @@ const ROUTES = [
   { client: 'opencode-openai-oauth', port: 8787, upstream: 'https://api.openai.com/v1' },
   { client: 'claude-code', port: 8788, upstream: 'https://api.anthropic.com/v1' },
 ];
+const DEBUG = process.argv.includes('--debug');
 const configUrl = process.env.ARP_CONFIG_FILE || new URL('../config.json', import.meta.url);
 
 async function main() {
@@ -50,6 +51,7 @@ async function main() {
     const server = createProxy({
       mode: config.mode,
       redactionLimits: config.redactionLimits,
+      debug: DEBUG,
       store,
       upstreamBase: route.upstream,
       protectAllPostBodies: true,
@@ -60,6 +62,7 @@ async function main() {
         event: 'proxy-started',
         client: route.client,
         mode: config.mode,
+        ...(DEBUG && { debug: true, warning: 'Debug logs include raw request-text previews that can contain credentials' }),
         storage: storage.encryptionKey ? 'encrypted' : 'plaintext',
         listen: `http://${HOST}:${route.port}/v1`,
         upstream: route.upstream,

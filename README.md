@@ -70,4 +70,5 @@ Keep the proxy local and protect mapping files—they contain original sensitive
 - [Configuration](docs/configuration.md) — modes, user-defined secrets and detection limits.
 - [Encryption](docs/encryption.md) — encrypt existing storage and protect the master key.
 - [Operations](docs/operations.md) — Docker, mapping recovery and tests.
+- [Testing](docs/testing.md) — test rules and the mock harness.
 - [Security and limitations](docs/security.md) — deliberate gaps and marker compatibility.

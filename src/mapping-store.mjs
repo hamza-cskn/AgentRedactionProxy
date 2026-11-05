@@ -20,7 +20,7 @@ const POOL_PREFIXES = [
 ];
 const OCTET = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
 const IPV4_PATTERN = new RegExp(`(^|[^0-9.]|(?<![0-9])\\.)(${OCTET}(?:\\.${OCTET}){3})(?!\\.?[0-9])`, 'g');
-const AWS_IPV4_PATTERN = new RegExp(`\\b(ip-)(${OCTET}(?:-${OCTET}){3})(?=\\.(?:ec2|[a-z0-9-]+\\.compute)\\.internal\\b)`, 'gi');
+const AWS_IPV4_PATTERN = new RegExp(`\\b(ip-)(${OCTET}(?:-${OCTET}){3})(?![0-9])`, 'gi');
 const STATE_VERSION = 3;
 const RESTORABLE_MARKER = new RegExp(RESTORABLE_MARKER_SOURCE, 'g');
 const EXACT_MARKER = new RegExp(`^${RESTORABLE_MARKER_SOURCE}$`);
@@ -419,8 +419,7 @@ export class MappingStore {
       const real = this.fakeToReal.get(marker);
       if (!real) return marker;
       count += 1;
-      const aws = marker.startsWith('[REDACTED_IP_') && /\bip-$/i.test(input.slice(0, offset))
-        && /^\.(?:ec2|[a-z0-9-]+\.compute)\.internal\b/i.test(input.slice(offset + marker.length));
+      const aws = marker.startsWith('[REDACTED_IP_') && /\bip-$/i.test(input.slice(0, offset));
       return aws ? real.replaceAll('.', '-') : real;
     });
     return { body, count };

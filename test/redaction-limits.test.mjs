@@ -32,11 +32,11 @@ for (const [name, limit, make, marker] of cases) {
     assert.equal(redactSecrets(make(limit + 1), { [name]: limit + 1 }).body, marker ?? make(limit + 1));
   });
 
-  for (const mode of ['default', 'paranoic']) {
-    test(`${mode}: ${name} fails closed across every HTTP byte split`, async () => {
+  for (const [mode, debug] of [['default', false], ['paranoic', false], ['default', true]]) {
+    test(`${mode}${debug ? ' --debug' : ''}: ${name} fails closed across every HTTP byte split`, async () => {
       let forwarded = false;
       const logs = [];
-      const proxy = createProxy({ mode, redactionLimits: { [name]: limit }, store: {
+      const proxy = createProxy({ mode, debug, redactionLimits: { [name]: limit }, store: {
         obfuscate() { throw new Error('Oversized input reached mapping'); },
       }, logger: (line) => logs.push(line), fetchImpl: async () => {
         forwarded = true;
@@ -62,7 +62,7 @@ for (const [name, limit, make, marker] of cases) {
           candidateLimit: limit,
           candidateType: { maxApiTokenChars: 'api-token', maxJwtChars: 'jwt', maxJwtHeaderBytes: 'jwt-header', maxBase64Chars: 'base64' }[name],
           candidateUnit: name === 'maxJwtHeaderBytes' ? 'bytes' : 'chars',
-          candidatePreview: candidate.slice(0, 32),
+          ...(debug && { candidatePreview: candidate.slice(0, 32) }),
         });
       }
       assert.equal(forwarded, false);

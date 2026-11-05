@@ -5,8 +5,7 @@ import { RedactionCandidateSizeError, resolveRedactionLimits } from './redaction
 // These are intentionally narrow. Generic long strings, UUIDs, and timestamps
 // are useful agent context, not reliable evidence of a credential.
 const ENCODED_URL = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*%3a%2f[^\s"'<>]*/gi;
-const PRIVATE_KEY_START = /-----BEGIN ((?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/g;
-const UNSAFE_PRIVATE_KEY = /-----(?:BEGIN|END) (?:(?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----|\bPuTTY-User-Key-File-\d+:/;
+const PRIVATE_KEY_MARKER = /-----(BEGIN|END) ((?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----|\bPuTTY-User-Key-File-\d+:/g;
 // Require a prefix boundary so words such as "task-queue" cannot match "sk-".
 // Separators (including MY_ prefixes) and appended suffixes still permit masking.
 // npm's documented core is 36 alphanumerics; PyPI's payload is at least 85
@@ -67,17 +66,25 @@ function checkCandidateSizes(value, limits) {
 function redactPrivateKeys(value, replace) {
   let cursor = 0;
   let body = '';
-  for (const match of value.matchAll(PRIVATE_KEY_START)) {
+  // Truncated PEM and PuTTY blocks redact through the end of the string; an
+  // orphan END redacts back to the previous cut. Never reject: a rejected
+  // marker stays in the history and would fail every later request.
+  for (const match of value.matchAll(PRIVATE_KEY_MARKER)) {
     if (match.index < cursor) continue;
-    const footer = `-----END ${match[1]}-----`;
-    const end = value.indexOf(footer, match.index + match[0].length);
-    if (end === -1) throw new Error('Unsafe private key');
-    body += value.slice(cursor, match.index) + replace('PRIVATE_KEY', value.slice(match.index, end + footer.length));
-    cursor = end + footer.length;
+    let start = match.index;
+    let stop = value.length;
+    if (match[1] === 'BEGIN') {
+      const footer = `-----END ${match[2]}-----`;
+      const end = value.indexOf(footer, match.index + match[0].length);
+      if (end !== -1) stop = end + footer.length;
+    } else if (match[1] === 'END') {
+      start = cursor;
+      stop = match.index + match[0].length;
+    }
+    body += value.slice(cursor, start) + replace('PRIVATE_KEY', value.slice(start, stop));
+    cursor = stop;
   }
   body += value.slice(cursor);
-  // Truncated/mismatched PEM and unsupported PuTTY blocks must not pass through.
-  if (UNSAFE_PRIVATE_KEY.test(body)) throw new Error('Unsafe private key');
   return body;
 }
 
@@ -173,8 +180,15 @@ function isMessagesThinkingBlob(value, path, parent, root) {
     && /^[A-Za-z0-9+/]+={0,2}$/.test(value);
 }
 
+// Opaque base64 payloads the upstream API decodes or verifies; rewriting them breaks the request.
+function isOpaquePayload(value, path, parent, root) {
+  return isResponseImageData(value, path, parent)
+    || isMessagesImageData(value, path, parent, root)
+    || isMessagesThinkingBlob(value, path, parent, root);
+}
+
 export function redactSecrets(text, redactionLimits, mode = 'paranoic', replace = permanentMarker) {
   const limits = resolveRedactionLimits(redactionLimits);
-  return transformJsonText(text, (value) => redactValue(value, limits, false, mode, replace),
-    (...args) => isResponseImageData(...args) || isMessagesImageData(...args) || isMessagesThinkingBlob(...args));
+  const redact = (value) => redactValue(value, limits, false, mode, replace);
+  return transformJsonText(text, redact, isOpaquePayload);
 }

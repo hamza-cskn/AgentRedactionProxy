@@ -25,15 +25,15 @@ const SAFE_ERROR_CODES = new Set([
 
 const SAFE_REDACTION_REASONS = new Map([
   ['Redaction candidate exceeds configured limit', 'redaction-candidate-too-large'],
-  ['Unsafe private key', 'unsafe-private-key'],
   ['Unsafe encoded URL', 'unsafe-encoded-url'],
   ['Unsafe encoded credential URL', 'unsafe-encoded-credential-url'],
 ]);
 
 // Never log arbitrary exception strings: messages, stacks and even custom
 // names/codes can contain request data. Bound causes, including aggregate errors.
-// Candidate size failures deliberately include a bounded request-text preview.
-export function errorDiagnostics(error, depth = 0) {
+// Candidate size failures include a raw 32-char request-text preview only with
+// preview (the --debug startup flag); it can contain part of a credential.
+export function errorDiagnostics(error, { preview = false } = {}, depth = 0) {
   const result = {
     name: SAFE_ERROR_NAMES.has(error?.name) ? error.name : 'UnknownError',
   };
@@ -48,12 +48,12 @@ export function errorDiagnostics(error, depth = 0) {
     result.candidateLimit = error.candidateLimit;
     result.candidateType = error.candidateType;
     result.candidateUnit = error.candidateUnit;
-    result.candidatePreview = error.candidatePreview;
+    if (preview) result.candidatePreview = error.candidatePreview;
   }
   if (depth < 3) {
-    if (error?.cause) result.cause = errorDiagnostics(error.cause, depth + 1);
+    if (error?.cause) result.cause = errorDiagnostics(error.cause, { preview }, depth + 1);
     if (error instanceof AggregateError) {
-      result.errors = error.errors.slice(0, 4).map((item) => errorDiagnostics(item, depth + 1));
+      result.errors = error.errors.slice(0, 4).map((item) => errorDiagnostics(item, { preview }, depth + 1));
     }
   }
   return result;
