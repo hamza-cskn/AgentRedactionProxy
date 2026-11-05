@@ -1,4 +1,4 @@
-import { RESTORABLE_MARKER_SOURCE } from '../sensitive-texts.mjs';
+import { RESTORABLE_MARKER_SOURCE } from './markers.mjs';
 
 const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const MARKER = new RegExp(`^${RESTORABLE_MARKER_SOURCE}$`);

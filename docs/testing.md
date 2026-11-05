@@ -30,7 +30,7 @@ A test that cannot catch one of these is not worth writing. Before writing tests
 
 - **Names:** `<function or component> (<mode>, <shape>): <scenario and expected result>`, for example `redactSecrets (paranoic, RSA PRIVATE KEY): unterminated BEGIN redacts to the end of the string`.
 - **Logic in tests:** parameterize with a module-level table and a loop that creates one named `test()` per case. Test bodies hold no loops, conditionals or computed expected values. Fuzz tests are the one exception: seeded `prng`, invariants only, the seed in every failure message.
-- **External dependencies:** the upstream API is always faked, and `invoke` calls the request handler without sockets. A test that never reaches the mapping store passes `store: {}`. Leak tests use a real store in a temp dir, because the store runs the passes under test.
+- **External dependencies:** the upstream API is always faked, and `invoke` calls the request handler without sockets. `store: {}` behaves as an unavailable store: the proxy then forwards a request unchanged only if a stateless scan finds nothing to protect, so it suits tests of rejections and of that fallback. Leak tests use a real store in a temp dir, because the store runs the redaction under test.
 - **Clocks:** log lines carry `timestamp` and `durationMs`. Assert on fields, never on whole log lines.
 
 ## Project rules

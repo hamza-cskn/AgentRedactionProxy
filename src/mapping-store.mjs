@@ -1,6 +1,5 @@
 import { POOL_SIZE, Redactor } from './redactor.mjs';
 import { customTextMatcher } from './scan/custom-text.mjs';
-import { ipSpans } from './scan/ip.mjs';
 import { transformJsonText } from './scan/traverse.mjs';
 import { validateSensitiveTexts } from './sensitive-texts.mjs';
 import { StateStore, defaultStatePath, readState } from './store.mjs';
@@ -15,13 +14,9 @@ export class TransformedBodyLimitError extends Error {
   }
 }
 
-// A failed store may be bypassed only for text with no real address. Use the
-// same JSON decoding and address patterns as obfuscation, without state access.
-export function containsSensitiveIpv4(text) {
-  return transformJsonText(text, (value) => ({ body: value, count: ipSpans(value).length })).count > 0;
-}
-
-// Transitional facade over StateStore and Redactor, kept until tests move to them.
+// What the proxy talks to: each operation runs a Redactor on a fresh state
+// snapshot inside a StateStore transaction. state and realToFake expose the
+// last committed snapshot, read-only.
 export class MappingStore {
   static async status(statePath = defaultStatePath(), { encryptionKey } = {}) {
     const state = await readState(statePath, encryptionKey);

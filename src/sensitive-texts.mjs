@@ -1,8 +1,6 @@
 import { open } from 'node:fs/promises';
 import { decryptText } from './encrypted-storage.mjs';
 
-export const RESTORABLE_MARKER_SOURCE = '\\[REDACTED_(?:IP|TEXT|API_KEY|JWT|PRIVATE_KEY|PASSWORD)_[a-f0-9]{32}\\]';
-
 export function validateSensitiveTexts(values) {
   if (!Array.isArray(values) || values.length > 1024 || values.some((value) => (
     typeof value !== 'string' || value.trim() === '' || Buffer.byteLength(value) > 4096

@@ -5,7 +5,7 @@ import { collectExactIpv4, isDocumentationAddress, replaceAddresses } from './sc
 import { scanString } from './scan/scan.mjs';
 import { applySpans } from './scan/spans.mjs';
 import { transformJsonText } from './scan/traverse.mjs';
-import { RESTORABLE_MARKER_SOURCE } from './sensitive-texts.mjs';
+import { RESTORABLE_MARKER_SOURCE } from './scan/markers.mjs';
 
 const POOL_PREFIXES = [
   '192.0.2',

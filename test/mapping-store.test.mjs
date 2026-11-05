@@ -8,10 +8,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import {
-  MappingStore,
-  containsSensitiveIpv4,
-} from '../src/mapping-store.mjs';
+import { MappingStore } from '../src/mapping-store.mjs';
+import { containsSensitive } from '../src/scan/scan.mjs';
+
+const containsSensitiveIpv4 = (text) => containsSensitive(text, { secrets: false });
 
 async function statePath() {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'opencode-ipv4-store-'));
