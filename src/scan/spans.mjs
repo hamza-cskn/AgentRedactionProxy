@@ -1,5 +1,5 @@
 // Priority for partial overlaps: a merged span takes the higher-ranked type.
-const PRIORITY = ['PRIVATE_KEY', 'PASSWORD', 'API_KEY', 'JWT'];
+const PRIORITY = ['PRIVATE_KEY', 'PASSWORD', 'API_KEY', 'JWT', 'TEXT', 'IP'];
 const rank = (type) => PRIORITY.indexOf(type);
 
 // Overlapping detections never leave a fragment of either secret visible: a

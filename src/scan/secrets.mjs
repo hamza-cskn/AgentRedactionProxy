@@ -1,5 +1,5 @@
 import { privateKeySpans } from './private-key.mjs';
-import { applySpans, resolveSpans } from './spans.mjs';
+import { applySpans } from './spans.mjs';
 import { apiKeySpans, checkSize, checkTokenSizes, jwtSpans } from './tokens.mjs';
 import { urlPasswordSpans } from './url-password.mjs';
 
@@ -21,18 +21,18 @@ function checkEncodedUrls(body, limits, decodedUrl, mode) {
     } catch {
       throw new Error('Unsafe encoded URL');
     }
-    if (scanSecrets(decoded, limits, mode, true).length > 0) throw new Error('Unsafe encoded credential URL');
+    if (secretSpans(decoded, limits, mode, true).length > 0) throw new Error('Unsafe encoded credential URL');
   }
 }
 
-// Built-in secret spans of one decoded string, resolved and non-overlapping.
+// Built-in secret spans of one decoded string, possibly overlapping.
 // Throws when a candidate exceeds a size limit or an encoded URL is unsafe.
-export function scanSecrets(value, limits, mode, decodedUrl = false) {
+export function secretSpans(value, limits, mode, decodedUrl = false) {
   // Never decode arbitrary base64 blobs; only bound their size.
   for (const [blob] of value.matchAll(BASE64_RUN)) checkSize(blob, blob.length, limits.maxBase64Chars, 'base64');
   checkTokenSizes(value, limits);
   const keys = privateKeySpans(value);
   // Encoded URLs inside a private key are redacted with it, not inspected.
   checkEncodedUrls(applySpans(value, keys, () => '[REDACTED_PRIVATE_KEY]'), limits, decodedUrl, mode);
-  return resolveSpans([...keys, ...urlPasswordSpans(value), ...apiKeySpans(value, mode), ...jwtSpans(value, limits)]);
+  return [...keys, ...urlPasswordSpans(value), ...apiKeySpans(value, mode), ...jwtSpans(value, limits)];
 }

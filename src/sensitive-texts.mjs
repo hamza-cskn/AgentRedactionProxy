@@ -1,10 +1,7 @@
 import { open } from 'node:fs/promises';
-import { transformJsonText } from './scan/traverse.mjs';
 import { decryptText } from './encrypted-storage.mjs';
 
 export const RESTORABLE_MARKER_SOURCE = '\\[REDACTED_(?:IP|TEXT|API_KEY|JWT|PRIVATE_KEY|PASSWORD)_[a-f0-9]{32}\\]';
-const marker = new RegExp(`^${RESTORABLE_MARKER_SOURCE}$`);
-const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function validateSensitiveTexts(values) {
   if (!Array.isArray(values) || values.length > 1024 || values.some((value) => (
@@ -32,22 +29,4 @@ export async function loadSensitiveTexts(file, encryptionKey) {
   } finally {
     await handle?.close();
   }
-}
-
-// Patterns are always escaped literals. Match complete existing markers before
-// any substring entry so a short configured value cannot damage them.
-export function replaceSensitiveTexts(text, patterns, replace) {
-  if (patterns.length === 0) return { body: text, count: 0 };
-  const spanning = patterns.filter((value) => /\[REDACTED_/.test(value));
-  const literal = patterns.filter((value) => !/\[REDACTED_/.test(value));
-  const regex = new RegExp([...spanning.map(escape), RESTORABLE_MARKER_SOURCE, ...literal.map(escape)].join('|'), 'g');
-  return transformJsonText(text, (value) => {
-    let count = 0;
-    const body = value.replace(regex, (match) => {
-      if (marker.test(match)) return match;
-      count += 1;
-      return replace(match);
-    });
-    return { body, count };
-  });
 }

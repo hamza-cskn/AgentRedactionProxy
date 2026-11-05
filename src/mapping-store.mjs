@@ -3,24 +3,20 @@ import { chmod, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { resolveRedactionLimits } from './redaction-limits.mjs';
+import { customTextMatcher } from './scan/custom-text.mjs';
+import { collectExactIpv4, ipSpans, isDocumentationAddress, replaceAddresses } from './scan/ip.mjs';
+import { scanString } from './scan/scan.mjs';
+import { applySpans } from './scan/spans.mjs';
 import { transformJsonText } from './scan/traverse.mjs';
-import { redactSecrets } from './secret-redaction.mjs';
-import { RESTORABLE_MARKER_SOURCE, replaceSensitiveTexts, validateSensitiveTexts } from './sensitive-texts.mjs';
+import { RESTORABLE_MARKER_SOURCE, validateSensitiveTexts } from './sensitive-texts.mjs';
 import { decryptText, encryptText } from './encrypted-storage.mjs';
 
-const DOCUMENTATION_PREFIXES = new Set([
-  '192.0.2',
-  '198.51.100',
-  '203.0.113',
-]);
 const POOL_PREFIXES = [
   '192.0.2',
   '198.51.100',
   '203.0.113',
 ];
-const OCTET = '(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])';
-const IPV4_PATTERN = new RegExp(`(^|[^0-9.]|(?<![0-9])\\.)(${OCTET}(?:\\.${OCTET}){3})(?!\\.?[0-9])`, 'g');
-const AWS_IPV4_PATTERN = new RegExp(`\\b(ip-)(${OCTET}(?:-${OCTET}){3})(?![0-9])`, 'gi');
 const STATE_VERSION = 3;
 const RESTORABLE_MARKER = new RegExp(RESTORABLE_MARKER_SOURCE, 'g');
 const EXACT_MARKER = new RegExp(`^${RESTORABLE_MARKER_SOURCE}$`);
@@ -46,10 +42,6 @@ export class MappingCapacityError extends Error {
 
 export function defaultStatePath() {
   return path.join(os.homedir(), '.local', 'share', 'opencode-ipv4-proxy', 'redaction_mapping.json');
-}
-
-function isDocumentationAddress(ip) {
-  return DOCUMENTATION_PREFIXES.has(ip.slice(0, ip.lastIndexOf('.')));
 }
 
 function fakeAddressAt(index) {
@@ -124,12 +116,6 @@ function validateSecretMappings(mappings, fakeValues) {
 
 function newMarker(type = 'IP') {
   return `[REDACTED_${type}_${randomUUID().replaceAll('-', '')}]`;
-}
-
-function collectExactIpv4(value) {
-  IPV4_PATTERN.lastIndex = 0;
-  const match = IPV4_PATTERN.exec(value);
-  return match && match[0] === value ? match[2] : null;
 }
 
 async function readState(statePath, encryptionKey) {
@@ -222,31 +208,10 @@ async function acquireLock(lockPath) {
   throw new Error('Timed out waiting for mapping state lock');
 }
 
-function replaceAddresses(text, lookup, fallback = null) {
-  let count = 0;
-  let body = text;
-  for (const [pattern, hyphenated] of [[IPV4_PATTERN, false], [AWS_IPV4_PATTERN, true]]) {
-    pattern.lastIndex = 0;
-    body = body.replace(pattern, (match, prefix, address) => {
-      const ip = hyphenated ? address.replaceAll('-', '.') : address;
-      const replacement = lookup(ip);
-      if (replacement === ip) return match;
-      if (replacement === null || replacement === undefined) {
-        return fallback === null ? match : `${prefix}${fallback}`;
-      }
-      count += 1;
-      return `${prefix}${hyphenated ? replacement.replaceAll('.', '-') : replacement}`;
-    });
-  }
-  return { body, count };
-}
-
 // A failed store may be bypassed only for text with no real address. Use the
 // same JSON decoding and address patterns as obfuscation, without state access.
 export function containsSensitiveIpv4(text) {
-  return transformJsonText(text, (value) => replaceAddresses(value, (ip) => (
-    isDocumentationAddress(ip) ? ip : '[redacted-ipv4]'
-  ))).count > 0;
+  return transformJsonText(text, (value) => ({ body: value, count: ipSpans(value).length })).count > 0;
 }
 
 export class MappingStore {
@@ -270,7 +235,7 @@ export class MappingStore {
     this.lockPath = `${statePath}.lock`;
     this.encryptionKey = encryptionKey;
     this.storageGuard = storageGuard;
-    this.sensitiveTexts = validateSensitiveTexts(sensitiveTexts).sort((a, b) => b.length - a.length);
+    this.customText = customTextMatcher(validateSensitiveTexts(sensitiveTexts));
     this.#applyState(state);
     this.queue = Promise.resolve();
   }
@@ -297,7 +262,7 @@ export class MappingStore {
   }
 
   containsSensitiveTexts(text) {
-    return replaceSensitiveTexts(text, this.sensitiveTexts, () => '[sensitive]').count > 0;
+    return transformJsonText(text, (value) => ({ body: value, count: this.customText(value).length })).count > 0;
   }
 
   async #obfuscate(text, options = {}) {
@@ -340,30 +305,24 @@ export class MappingStore {
     return fake;
   }
 
-  #sensitiveTextPatterns(redactionLimits, mode) {
-    // Match whole configured phrases even when an overlapping built-in
-    // credential has already been replaced with its marker.
-    return this.sensitiveTexts.flatMap((value) => {
-      try {
-        const matched = redactSecrets(value, redactionLimits, mode, (type, real) => (
-          this.secretToFake.get(JSON.stringify([type, real])) ?? real
-        )).body;
-        return matched === value ? [value] : [matched, value];
-      } catch {
-        // Malformed configured literals must not reject unrelated requests.
-        return [value];
-      }
+  // One scan per decoded string; IPs use the address pool, the rest secret markers.
+  #redact(text, { redact, mode, redactionLimits }) {
+    const options = { limits: resolveRedactionLimits(redactionLimits), mode, secrets: redact, customText: this.customText };
+    let ipCount = 0;
+    let secretCount = 0;
+    const { body } = transformJsonText(text, (value) => {
+      const spans = scanString(value, options);
+      const replaced = applySpans(value, spans, (type, real) => {
+        if (type === 'IP') {
+          ipCount += 1;
+          return this.#allocateIp(real.replaceAll('-', '.'));
+        }
+        secretCount += 1;
+        return this.#allocateSecret(type, real);
+      });
+      return { body: replaced, count: spans.length };
     });
-  }
-
-  #redactRequest(text, redactionLimits, mode) {
-    const secrets = redactSecrets(text, redactionLimits, mode, (type, real) => this.#allocateSecret(type, real));
-    const patterns = this.#sensitiveTextPatterns(redactionLimits, mode);
-    const custom = replaceSensitiveTexts(secrets.body, patterns, (value) => {
-      const real = value.replace(RESTORABLE_MARKER, (marker) => this.fakeToReal.get(marker) ?? marker);
-      return this.#allocateSecret('TEXT', real);
-    });
-    return { body: custom.body, count: secrets.count + custom.count };
+    return { body, count: ipCount, secretCount };
   }
 
   async #obfuscateLocked(text, { maxBytes = Number.POSITIVE_INFINITY, redact = false, mode = 'paranoic', redactionLimits } = {}) {
@@ -380,13 +339,7 @@ export class MappingStore {
     const originalNextIndex = this.state.nextIndex;
     const originalSecretLength = this.state.secretMappings.length;
     try {
-      let secretCount = 0;
-      if (redact) {
-        const secrets = this.#redactRequest(text, redactionLimits, mode);
-        text = secrets.body;
-        secretCount = secrets.count;
-      }
-      const transformed = transformJsonText(text, (value) => replaceAddresses(value, (ip) => this.#allocateIp(ip)));
+      const { secretCount, ...transformed } = this.#redact(text, { redact, mode, redactionLimits });
 
       if (Buffer.byteLength(transformed.body, 'utf8') > maxBytes) {
         throw new TransformedBodyLimitError();

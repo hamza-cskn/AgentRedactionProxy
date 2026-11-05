@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MODES, assertNoLeak, entropy, proxyHarness } from './helpers/harness.mjs';
 
@@ -13,5 +14,15 @@ for (const mode of MODES) {
     await h.send({ input: `token ${jwtWithKeyPayload}` });
 
     assertNoLeak(h.upstream[0].body, signature, 'upstream body');
+  });
+}
+
+for (const mode of MODES) {
+  test(`proxy (${mode}, user-defined text ending inside an IPv4): no octet of the address reaches upstream`, async (t) => {
+    const h = await proxyHarness(t, { mode, sensitiveTexts: ['db at 10.20'] });
+
+    await h.send({ input: 'db at 10.20.30.40 is down' });
+
+    assert.doesNotMatch(h.upstream[0].body, /30\.40/);
   });
 }
