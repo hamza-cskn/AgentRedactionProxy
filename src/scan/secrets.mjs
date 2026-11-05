@@ -8,20 +8,22 @@ import { urlPasswordSpans } from './url-password.mjs';
 const ENCODED_URL = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*%3a%2f[^\s"'<>]*/gi;
 const BASE64_RUN = /[A-Za-z0-9+/_-]+={0,2}/g;
 
+export class UnsafeEncodedUrlError extends Error {}
+
 function checkEncodedUrls(body, limits, decodedUrl, mode) {
   for (const [encoded] of body.matchAll(ENCODED_URL)) {
     // Do not recursively unwrap arbitrary encoding layers. Uncertain encoded
     // credentials are rejected rather than rewritten into a different URL.
-    if (decodedUrl) throw new Error('Unsafe encoded URL');
+    if (decodedUrl) throw new UnsafeEncodedUrlError('Unsafe encoded URL');
     let decoded;
     // Literal percent signs are legal surrounding text, not broken escapes.
     // Preserve them while decoding actual %HH sequences for the same checks.
     try {
       decoded = decodeURIComponent(encoded.replace(/%(?![0-9a-f]{2})/gi, '%25'));
     } catch {
-      throw new Error('Unsafe encoded URL');
+      throw new UnsafeEncodedUrlError('Unsafe encoded URL');
     }
-    if (secretSpans(decoded, limits, mode, true).length > 0) throw new Error('Unsafe encoded credential URL');
+    if (secretSpans(decoded, limits, mode, true).length > 0) throw new UnsafeEncodedUrlError('Unsafe encoded credential URL');
   }
 }
 

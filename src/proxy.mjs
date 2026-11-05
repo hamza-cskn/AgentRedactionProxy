@@ -1,9 +1,9 @@
 import http from 'node:http';
 
-import { containsSensitiveIpv4 } from './mapping-store.mjs';
 import { errorDiagnostics, logMetadata } from './proxy-logging.mjs';
 import { redactSecrets } from './secret-redaction.mjs';
 import { resolveRedactionLimits } from './redaction-limits.mjs';
+import { containsSensitive, isScanRejection } from './scan/scan.mjs';
 import { deobfuscateSse, protocolForPath, stripV1Prefix } from './sse-transform.mjs';
 
 const DEFAULT_MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -72,7 +72,14 @@ function sendJsonError(response, status, message, headers = {}) {
   response.end(JSON.stringify({ error: message }));
 }
 
-function mappingFailure(error, original, redacted, secretCount, { mode, store }) {
+function secretRedactionFailed(error, options) {
+  return new RequestRejection(502, 'Outbound secret redaction failed; request was not forwarded',
+    'outbound-secret-redaction-failed', errorDiagnostics(error, { preview: options.debug }));
+}
+
+// The store failed. Forward the request unchanged only when nothing in it
+// needs protection; otherwise reject it.
+function mappingFailure(error, original, { mode, store, limits }) {
   switch (error.code) {
     case 'MAPPING_CAPACITY_EXHAUSTED':
     case 'SECRET_MAPPING_CAPACITY_EXHAUSTED':
@@ -80,8 +87,9 @@ function mappingFailure(error, original, redacted, secretCount, { mode, store })
     case 'TRANSFORMED_BODY_TOO_LARGE':
       throw new RequestRejection(413, 'Transformed request body exceeds 64 MiB limit', 'transformed-request-too-large');
   }
-  const mustProtect = mode === 'paranoic' || secretCount > 0
-    || containsSensitiveIpv4(redacted) || store.containsSensitiveTexts?.(original);
+  // Scan first: an oversized or unsafe candidate must surface as a scan rejection.
+  const mustProtect = containsSensitive(original, { limits, mode }) || mode === 'paranoic'
+    || store.containsSensitiveTexts?.(original);
   if (mustProtect) {
     throw new RequestRejection(502, 'Outbound IPv4 redaction failed; request was not forwarded', 'outbound-redaction-failed');
   }
@@ -90,31 +98,24 @@ function mappingFailure(error, original, redacted, secretCount, { mode, store })
 
 async function redactRequest(body, options) {
   const { mode, store, limits, maxBodyBytes } = options;
-  let redacted;
   let original;
   try {
     original = new TextDecoder('utf-8', { fatal: true }).decode(body);
-    redacted = redactSecrets(original, limits, mode);
   } catch (error) {
-    throw new RequestRejection(502, 'Outbound secret redaction failed; request was not forwarded',
-      'outbound-secret-redaction-failed', errorDiagnostics(error, { preview: options.debug }));
-  }
-  if (Buffer.byteLength(redacted.body, 'utf8') > maxBodyBytes) {
-    throw new RequestRejection(413, 'Transformed request body exceeds 64 MiB limit', 'transformed-request-too-large');
+    throw secretRedactionFailed(error, options);
   }
   try {
-    if (redacted.count > 0 && !store.obfuscateRequest) throw new Error('Restorable secret mappings are unavailable');
-    const transformed = store.obfuscateRequest
-      ? await store.obfuscateRequest(body.toString('utf8'), { maxBytes: maxBodyBytes, mode, redactionLimits: limits })
-      : await store.obfuscate(redacted.body, { maxBytes: maxBodyBytes });
-    return {
-      body: Buffer.from(transformed.body, 'utf8'),
-      count: transformed.count,
-      secretCount: transformed.secretCount ?? redacted.count,
-    };
+    const transformed = await store.obfuscateRequest(original, { maxBytes: maxBodyBytes, mode, redactionLimits: limits });
+    return { body: Buffer.from(transformed.body, 'utf8'), count: transformed.count, secretCount: transformed.secretCount };
   } catch (error) {
-    const warning = mappingFailure(error, body.toString('utf8'), redacted.body, redacted.count, options);
-    return { body: Buffer.from(redacted.body, 'utf8'), count: 0, secretCount: redacted.count, warning };
+    if (isScanRejection(error)) throw secretRedactionFailed(error, options);
+    let warning;
+    try {
+      warning = mappingFailure(error, original, options);
+    } catch (failure) {
+      throw isScanRejection(failure) ? secretRedactionFailed(failure, options) : failure;
+    }
+    return { body, count: 0, secretCount: 0, warning };
   }
 }
 

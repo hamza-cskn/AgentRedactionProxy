@@ -270,7 +270,7 @@ test('default mapping failure rejects restorable secrets without forwarding', as
   context.after(() => close(upstream));
   const proxy = createProxy({
     mode: 'default',
-    store: { obfuscate: async () => { throw new Error('test failure'); }, deobfuscate: async () => ({ body: '{}', count: 0 }) },
+    store: { obfuscateRequest: async () => { throw new Error('test failure'); }, deobfuscate: async () => ({ body: '{}', count: 0 }) },
     upstreamBase: `${upstreamOrigin}/v1`,
     logger: () => {},
   });
@@ -516,7 +516,7 @@ test('paranoic mode refuses to forward when outbound redaction fails', async (co
   const proxy = createProxy({
     mode: 'paranoic',
     store: {
-      obfuscate: async () => { throw new Error('state unavailable'); },
+      obfuscateRequest: async () => { throw new Error('state unavailable'); },
       deobfuscate: () => { throw new Error('not reached'); },
     },
     upstreamBase: `${upstreamOrigin}/zen/v1`,
@@ -546,7 +546,7 @@ test('capacity exhaustion never forwards, including default mode', async (contex
   const proxy = createProxy({
     mode: 'default',
     store: {
-      obfuscate: async () => {
+      obfuscateRequest: async () => {
         const error = new Error('capacity exhausted');
         error.code = 'MAPPING_CAPACITY_EXHAUSTED';
         throw error;
@@ -583,7 +583,7 @@ for (const mode of ['paranoic', 'default']) {
       const proxy = createProxy({
         mode,
         store: {
-          obfuscate: async () => { throw new Error('state unavailable'); },
+          obfuscateRequest: async () => { throw new Error('state unavailable'); },
           deobfuscate: async (text) => ({ body: text, count: 0 }),
         },
         logger: () => {},
@@ -610,7 +610,7 @@ for (const mode of ['paranoic', 'default']) {
       const proxy = createProxy({
         mode,
         store: {
-          obfuscate: async () => { throw Object.assign(new Error('state unavailable for 10.0.0.1'), { code }); },
+          obfuscateRequest: async () => { throw Object.assign(new Error('state unavailable for 10.0.0.1'), { code }); },
           deobfuscate: async (text) => ({ body: text, count: 0 }),
         },
         logger: (line) => logs.push(line),
@@ -647,7 +647,7 @@ test('returns the fake response when inbound deobfuscation fails', async (contex
   const proxy = createProxy({
     mode: 'paranoic',
     store: {
-      obfuscate: async (text) => ({ body: text, count: 0 }),
+      obfuscateRequest: async (text) => ({ body: text, count: 0 }),
       deobfuscate: async () => { throw new Error('decode failed'); },
     },
     upstreamBase: `${upstreamOrigin}/zen/v1`,
@@ -870,7 +870,7 @@ test('rejects a response that exceeds the limit after deobfuscation', async (con
   const proxy = createProxy({
     mode: 'paranoic',
     store: {
-      obfuscate: async (text) => ({ body: text, count: 0 }),
+      obfuscateRequest: async (text) => ({ body: text, count: 0 }),
       deobfuscate: async () => ({ body: '123456789', count: 1 }),
     },
     upstreamBase: `${upstreamOrigin}/zen/v1`,

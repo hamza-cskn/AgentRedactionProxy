@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -10,6 +10,7 @@ import { createProxy } from '../src/proxy.mjs';
 import { errorDiagnostics } from '../src/proxy-logging.mjs';
 import { DEFAULT_REDACTION_LIMITS, resolveRedactionLimits } from '../src/redaction-limits.mjs';
 import { redactSecrets } from '../src/secret-redaction.mjs';
+import { tempStore } from './helpers/harness.mjs';
 
 const header = Buffer.from('{"alg":"HS256"}').toString('base64url');
 const cases = [
@@ -33,12 +34,12 @@ for (const [name, limit, make, marker] of cases) {
   });
 
   for (const [mode, debug] of [['default', false], ['paranoic', false], ['default', true]]) {
-    test(`${mode}${debug ? ' --debug' : ''}: ${name} fails closed across every HTTP byte split`, async () => {
+    test(`${mode}${debug ? ' --debug' : ''}: ${name} fails closed across every HTTP byte split`, async (t) => {
       let forwarded = false;
       const logs = [];
-      const proxy = createProxy({ mode, debug, redactionLimits: { [name]: limit }, store: {
-        obfuscate() { throw new Error('Oversized input reached mapping'); },
-      }, logger: (line) => logs.push(line), fetchImpl: async () => {
+      const store = await tempStore(t);
+      const proxy = createProxy({ mode, debug, redactionLimits: { [name]: limit }, store,
+        logger: (line) => logs.push(line), fetchImpl: async () => {
         forwarded = true;
         return new Response('{}');
       } });
@@ -67,6 +68,7 @@ for (const [name, limit, make, marker] of cases) {
       }
       assert.equal(forwarded, false);
       assert.equal(logs.join('').includes(make(limit + 1)), false);
+      await assert.rejects(readFile(store.statePath), { code: 'ENOENT' }, 'no mapping is persisted');
     });
   }
 }
