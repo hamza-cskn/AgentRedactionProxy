@@ -1,11 +1,12 @@
 import { redactUrlPasswords } from './url-credentials.mjs';
 import { transformJsonText } from './scan/traverse.mjs';
+import { privateKeySpans } from './scan/private-key.mjs';
+import { applySpans } from './scan/spans.mjs';
 import { RedactionCandidateSizeError, resolveRedactionLimits } from './redaction-limits.mjs';
 
 // These are intentionally narrow. Generic long strings, UUIDs, and timestamps
 // are useful agent context, not reliable evidence of a credential.
 const ENCODED_URL = /(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*%3a%2f[^\s"'<>]*/gi;
-const PRIVATE_KEY_MARKER = /-----(BEGIN|END) ((?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----|\bPuTTY-User-Key-File-\d+:/g;
 // Require a prefix boundary so words such as "task-queue" cannot match "sk-".
 // Separators (including MY_ prefixes) and appended suffixes still permit masking.
 // npm's documented core is 36 alphanumerics; PyPI's payload is at least 85
@@ -63,31 +64,6 @@ function checkCandidateSizes(value, limits) {
   for (const [token] of value.matchAll(WEB_TOKEN)) checkJwtCandidate(token, limits);
 }
 
-function redactPrivateKeys(value, replace) {
-  let cursor = 0;
-  let body = '';
-  // Truncated PEM and PuTTY blocks redact through the end of the string; an
-  // orphan END redacts back to the previous cut. Never reject: a rejected
-  // marker stays in the history and would fail every later request.
-  for (const match of value.matchAll(PRIVATE_KEY_MARKER)) {
-    if (match.index < cursor) continue;
-    let start = match.index;
-    let stop = value.length;
-    if (match[1] === 'BEGIN') {
-      const footer = `-----END ${match[2]}-----`;
-      const end = value.indexOf(footer, match.index + match[0].length);
-      if (end !== -1) stop = end + footer.length;
-    } else if (match[1] === 'END') {
-      start = cursor;
-      stop = match.index + match[0].length;
-    }
-    body += value.slice(cursor, start) + replace('PRIVATE_KEY', value.slice(start, stop));
-    cursor = stop;
-  }
-  body += value.slice(cursor);
-  return body;
-}
-
 function checkEncodedUrls(body, limits, decodedUrl, mode) {
   for (const [encoded] of body.matchAll(ENCODED_URL)) {
     // Do not recursively unwrap arbitrary encoding layers. Uncertain encoded
@@ -131,7 +107,7 @@ function redactValue(value, limits, decodedUrl = false, mode = 'paranoic', repla
     count += 1;
     return replace(type, secret);
   };
-  let body = redactPrivateKeys(value, redact);
+  let body = applySpans(value, privateKeySpans(value), redact);
   checkEncodedUrls(body, limits, decodedUrl, mode);
   body = redactUrlPasswords(body, redact).body;
   body = body.replace(API_KEY, (token, offset, input) => {
