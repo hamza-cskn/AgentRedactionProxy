@@ -57,6 +57,19 @@ test('AWS hostnames share persistent dotted-IP mappings and restore their origin
   assert.equal(JSON.parse(await readFile(filePath, 'utf8')).mappings.length, 1);
 });
 
+test('short AWS hostnames without a DNS suffix are redacted and restored', async (context) => {
+  const filePath = await statePath();
+  context.after(() => fs.rm(path.dirname(filePath), { recursive: true, force: true }));
+  const store = await MappingStore.open(filePath);
+  const input = 'node ip-10-20-30-40 is Ready, prompt [ec2-user@ip-10-20-30-40 ~]$';
+  const transformed = await store.obfuscate(input);
+  assert.equal(transformed.count, 2);
+  assert.doesNotMatch(transformed.body, /10-20-30-40/);
+  assert.match(transformed.body, /^node ip-\[REDACTED_IP_[a-f0-9]{32}\] is Ready/);
+  assert.deepEqual(await store.deobfuscate(transformed.body), { body: input, count: 2 });
+  assert.equal(containsSensitiveIpv4('ip-10-20-30-40'), true);
+});
+
 for (const [input, expected] of [
   ['10.20.30.40', true],
   ['ip-10-20-30-40.ec2.internal', true],

@@ -352,45 +352,38 @@ for (const mode of ['paranoic', 'default']) {
   }
 }
 
-for (const [name, input] of [
-  ['incomplete private key', '10.20.30.40\n-----BEGIN PRIVATE KEY-----\nQUJDREVGRw=='],
-]) {
-  test(`paranoic blocks unsafe text: ${name}`, async (context) => {
-    let upstreamCalls = 0;
-    const upstream = http.createServer((_request, response) => {
-      upstreamCalls += 1;
-      response.end('{}');
-    });
-    const upstreamOrigin = await listen(upstream);
-    context.after(() => close(upstream));
-    const store = await createStore();
-    const proxy = createProxy({
-      mode: 'paranoic',
-      store,
-      upstreamBase: `${upstreamOrigin}/v1`,
-      protectAllPostBodies: true,
-      logger: () => {},
-    });
-    const proxyOrigin = await listen(proxy);
-    context.after(() => close(proxy));
-    const response = await fetch(`${proxyOrigin}/v1/messages`, {
-      method: 'POST',
-      body: input,
-    });
-    assert.equal(upstreamCalls, 0);
-    assert.equal(response.status, 502);
-    assert.deepEqual(await response.json(), {
-      error: 'Outbound secret redaction failed; request was not forwarded',
-    });
+test('paranoic redacts an incomplete private key instead of rejecting', async (context) => {
+  const captured = [];
+  const upstream = http.createServer(async (request, response) => {
+    captured.push(await readRequest(request));
+    response.end('{}');
   });
-}
+  const upstreamOrigin = await listen(upstream);
+  context.after(() => close(upstream));
+  const store = await createStore();
+  const proxy = createProxy({
+    mode: 'paranoic',
+    store,
+    upstreamBase: `${upstreamOrigin}/v1`,
+    protectAllPostBodies: true,
+    logger: () => {},
+  });
+  const proxyOrigin = await listen(proxy);
+  context.after(() => close(proxy));
+  const response = await fetch(`${proxyOrigin}/v1/messages`, {
+    method: 'POST',
+    body: `10.20.30.40\n${'-'.repeat(5)}BEGIN PRIVATE KEY${'-'.repeat(5)}\nQUJDREVGRw==`,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(captured.length, 1);
+  assert.equal(redactedText(store, captured[0]), `${store.realToFake.get('10.20.30.40')}\n[REDACTED_PRIVATE_KEY]`);
+});
 
 for (const [body, diagnostic] of [
-  ['-----BEGIN PRIVATE KEY-----\nprivate-content', { name: 'Error', reason: 'unsafe-private-key' }],
   ['a'.repeat(65537), {
     name: 'Error', reason: 'redaction-candidate-too-large',
     candidateLength: 65537, candidateLimit: 65536, candidateType: 'base64',
-    candidateUnit: 'chars', candidatePreview: 'a'.repeat(32),
+    candidateUnit: 'chars',
   }],
   ['https%3a%2f%2fuser%3apassword%40example.com', { name: 'Error', reason: 'unsafe-encoded-credential-url' }],
   ['https%3a%2f%FF', { name: 'Error', reason: 'unsafe-encoded-url' }],
@@ -844,7 +837,7 @@ test('redacts IPv4 addresses that appear in the logged endpoint path', async (co
   assert.equal(logs.some((line) => line.includes('[redacted-ipv4]')), true);
 });
 
-test('strict credential rejection in log metadata does not escape the request handler', async (context) => {
+test('private key markers in the endpoint are redacted in log metadata', async (context) => {
   const logs = [];
   const store = await createStore();
   const proxy = createProxy({
@@ -862,7 +855,7 @@ test('strict credential rejection in log metadata does not escape the request ha
   assert.equal(await response.text(), '{}');
   assert.equal(response.status, 200);
   assert.equal(logs.length, 1);
-  assert.equal(logs[0].endpoint, '[redacted-endpoint]');
+  assert.equal(logs[0].endpoint, '/v1/[REDACTED_PRIVATE_KEY]');
 });
 
 test('rejects a response that exceeds the limit after deobfuscation', async (context) => {

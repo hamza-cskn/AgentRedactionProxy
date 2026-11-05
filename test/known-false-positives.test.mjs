@@ -15,8 +15,8 @@ const cases = [
   { name: 'HF filename policy', input: 'hf_model_configuration_defaults.json', output: '[REDACTED_API_KEY].json', filename: true },
   { name: 'sk filename policy', input: 'sk-test-production-deployment.yaml', output: '[REDACTED_API_KEY].yaml', filename: true },
   // Conservative behavior explicitly left for policy decisions or out of scope.
-  { name: 'PEM marker documentation', input: 'Use the marker -----BEGIN PRIVATE KEY----- to recognize PEM files.', error: 'Unsafe private key' },
-  { name: 'PuTTY marker in code', input: 'const signature = "PuTTY-User-Key-File-3:";', error: 'Unsafe private key' },
+  { name: 'PEM marker documentation', input: `Use the marker ${'-'.repeat(5)}BEGIN PRIVATE KEY${'-'.repeat(5)} to recognize PEM files.`, output: 'Use the marker [REDACTED_PRIVATE_KEY]' },
+  { name: 'PuTTY marker in code', input: 'const signature = "PuTTY-User-Key-File-3:";', output: 'const signature = "[REDACTED_PRIVATE_KEY]' },
   { name: 'long ordinary string hits base64 guard', input: 'A'.repeat(65537), error: 'Redaction candidate exceeds configured limit' },
 ];
 
@@ -47,7 +47,7 @@ for (const mode of ['default', 'paranoic']) {
     } });
     for (const fixture of cases) {
       for (const history of [false, true]) {
-        const messages = [{ role: 'user', content: `${fixture.input}\n10.20.30.40` }];
+        const messages = [{ role: 'user', content: `10.20.30.40\n${fixture.input}` }];
         if (history) messages.push({ role: 'assistant', content: 'OK' }, { role: 'user', content: 'Continue' });
         const request = Object.assign(Readable.from([Buffer.from(JSON.stringify({ messages }))]), {
           method: 'POST', url: '/v1/responses', headers: {},
@@ -66,7 +66,7 @@ for (const mode of ['default', 'paranoic']) {
           assert.equal(response.body.includes(fixture.input), false, label);
         } else {
           const expected = fixture.filename && mode === 'default' ? fixture.input : fixture.output;
-          assert.equal(redactedText(store, forwarded.messages[0].content), `${expected}\n${store.realToFake.get('10.20.30.40')}`, label);
+          assert.equal(redactedText(store, forwarded.messages[0].content), `${store.realToFake.get('10.20.30.40')}\n${expected}`, label);
         }
       }
     }

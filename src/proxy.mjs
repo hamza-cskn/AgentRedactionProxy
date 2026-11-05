@@ -97,7 +97,7 @@ async function redactRequest(body, options) {
     redacted = redactSecrets(original, limits, mode);
   } catch (error) {
     throw new RequestRejection(502, 'Outbound secret redaction failed; request was not forwarded',
-      'outbound-secret-redaction-failed', errorDiagnostics(error));
+      'outbound-secret-redaction-failed', errorDiagnostics(error, { preview: options.debug }));
   }
   if (Buffer.byteLength(redacted.body, 'utf8') > maxBodyBytes) {
     throw new RequestRejection(413, 'Transformed request body exceeds 64 MiB limit', 'transformed-request-too-large');
@@ -216,7 +216,7 @@ async function forwardRequest(request, response, upstream, controller, state, op
   return result.response.status;
 }
 
-function sendFailure(response, error, state) {
+function sendFailure(response, error, state, debug) {
   const rejection = error instanceof RequestRejection;
   const status = rejection ? error.status : state.timedOut ? 504 : 502;
   const message = rejection ? error.message : state.timedOut ? 'Upstream request timed out' : 'Proxy request failed';
@@ -227,7 +227,7 @@ function sendFailure(response, error, state) {
     status,
     warning: state.timedOut ? 'upstream-timeout' : 'proxy-request-failed',
     failureStage: state.failureStage,
-    error: errorDiagnostics(error),
+    error: errorDiagnostics(error, { preview: debug }),
   };
 }
 
@@ -265,7 +265,7 @@ async function handleRequest(request, response, local, upstream, options) {
       const status = await forwardRequest(request, response, upstream, controller, state, options);
       outcome = { status, secretRedactions: state.secretRedactions, warning: state.warning };
     } catch (error) {
-      outcome = sendFailure(response, error, state);
+      outcome = sendFailure(response, error, state, options.debug);
     }
     logMetadata(options.logger, {
       mode: options.mode, endpoint: state.endpoint,
@@ -285,10 +285,10 @@ async function handleRequest(request, response, local, upstream, options) {
 export function createProxy({
   mode, store, upstreamBase = UPSTREAM_BASE, protectAllPostBodies = false,
   maxBodyBytes = DEFAULT_MAX_BODY_BYTES, upstreamTimeoutMs = 10 * 60 * 1000,
-  maxConcurrentRequests = 8, redactionLimits,
+  maxConcurrentRequests = 8, redactionLimits, debug = false,
   logger = (line) => process.stderr.write(`${line}\n`), fetchImpl = fetch,
 }) {
-  const options = { mode, store, protectAllPostBodies, maxBodyBytes, upstreamTimeoutMs, logger, fetchImpl,
+  const options = { mode, store, protectAllPostBodies, maxBodyBytes, upstreamTimeoutMs, logger, fetchImpl, debug,
     limits: resolveRedactionLimits(redactionLimits) };
   let activeRequests = 0;
   return http.createServer(async (request, response) => {
